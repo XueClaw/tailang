@@ -24,9 +24,10 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(buildCmd)
 	rootCmd.AddCommand(runCmd)
-	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(precompileCmd)
 	rootCmd.AddCommand(testCmd)
 	rootCmd.AddCommand(docCmd)
+	rootCmd.AddCommand(versionCmd)
 }
 
 var versionCmd = &cobra.Command{

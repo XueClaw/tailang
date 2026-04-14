@@ -10,7 +10,7 @@ pub mod emitter;
 pub use lexer::Lexer;
 pub use parser::Parser;
 pub use translator::Translator;
-pub use emitter::Emitter;
+pub use emitter::{Emitter, TargetLanguage};
 
 /// Compile a .meng file to executable
 pub fn compile(input: &str) -> Result<Vec<u8>, String> {
