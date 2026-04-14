@@ -1,0 +1,150 @@
+# User Authentication Example
+
+This example shows multi-language support in Tailang.
+
+## Natural Language Description
+
+用户登录系统，需要邮箱验证和密码加密 qwq
+
+## Code Supplements
+
+### Python - Password Hashing
+
+```python
+import bcrypt
+
+def hash_password(password: str) -> str:
+    """Hash a password using bcrypt"""
+    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+
+def verify_password(password: str, hashed: str) -> bool:
+    """Verify a password against a hash"""
+    return bcrypt.checkpw(password.encode(), hashed.encode())
+```
+
+### Go - HTTP Handler
+
+```go
+package main
+
+import (
+    "encoding/json"
+    "net/http"
+)
+
+type LoginRequest struct {
+    Email    string `json:"email"`
+    Password string `json:"password"`
+}
+
+type LoginResponse struct {
+    Token string `json:"token"`
+    Valid bool   `json:"valid"`
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+    var req LoginRequest
+    json.NewDecoder(r.Body).Decode(&req)
+    
+    // Validate and authenticate
+    valid := validateUser(req.Email, req.Password)
+    
+    response := LoginResponse{
+        Token: generateToken(req.Email),
+        Valid: valid,
+    }
+    
+    json.NewEncoder(w).Encode(response)
+}
+```
+
+### Rust - Database Query
+
+```rust
+use diesel::prelude::*;
+use crate::schema::users;
+
+#[derive(Queryable, Debug)]
+struct User {
+    id: i32,
+    email: String,
+    password_hash: String,
+}
+
+fn find_user_by_email(conn: &PgConnection, email: &str) -> Option<User> {
+    users::table
+        .filter(users::email.eq(email))
+        .first::<User>(conn)
+        .ok()
+}
+```
+
+### SQL - Database Schema
+
+```sql
+CREATE TABLE users (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_users_email ON users(email);
+```
+
+### JavaScript - Frontend Validation
+
+```javascript
+function validateEmail(email) {
+    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return re.test(email);
+}
+
+function validatePassword(password) {
+    return password.length >= 8 && 
+           /[A-Z]/.test(password) && 
+           /[0-9]/.test(password);
+}
+
+async function login(email, password) {
+    if (!validateEmail(email)) {
+        throw new Error('Invalid email format');
+    }
+    
+    if (!validatePassword(password)) {
+        throw new Error('Password too weak');
+    }
+    
+    const response = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password })
+    });
+    
+    return await response.json();
+}
+```
+
+## Usage
+
+```bash
+# Build this example
+meng build examples/auth/main.meng
+
+# Run it
+meng run examples/auth/main.meng
+```
+
+## Expected Output
+
+```
+🔐 User Authentication Example
+==============================
+✓ Email validation: OK
+✓ Password hashing: OK
+✓ Database query: OK
+✓ Frontend validation: OK
+
+All systems operational!
+```

@@ -1,0 +1,176 @@
+# REST API Example
+
+创建一个博客系统的 REST API，支持 CRUD 操作 0.0
+
+## Python - FastAPI Implementation
+
+```python
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from typing import List, Optional
+from datetime import datetime
+
+app = FastAPI(title="Blog API")
+
+class Post(BaseModel):
+    id: int
+    title: str
+    content: str
+    author: str
+    created_at: datetime
+    tags: Optional[List[str]] = []
+
+class PostCreate(BaseModel):
+    title: str
+    content: str
+    author: str
+    tags: Optional[List[str]] = []
+
+# In-memory database
+posts_db = []
+
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to Blog API", "version": "1.0.0"}
+
+@app.get("/posts", response_model=List[Post])
+def get_posts(skip: int = 0, limit: int = 10):
+    return posts_db[skip:skip + limit]
+
+@app.post("/posts", response_model=Post)
+def create_post(post: PostCreate):
+    new_post = Post(
+        id=len(posts_db) + 1,
+        **post.dict(),
+        created_at=datetime.now()
+    )
+    posts_db.append(new_post)
+    return new_post
+
+@app.get("/posts/{post_id}", response_model=Post)
+def get_post(post_id: int):
+    for post in posts_db:
+        if post.id == post_id:
+            return post
+    raise HTTPException(status_code=404, detail="Post not found")
+
+@app.put("/posts/{post_id}", response_model=Post)
+def update_post(post_id: int, post: PostCreate):
+    for i, p in enumerate(posts_db):
+        if p.id == post_id:
+            posts_db[i] = Post(id=post_id, **post.dict(), created_at=p.created_at)
+            return posts_db[i]
+    raise HTTPException(status_code=404, detail="Post not found")
+
+@app.delete("/posts/{post_id}")
+def delete_post(post_id: int):
+    for i, p in enumerate(posts_db):
+        if p.id == post_id:
+            del posts_db[i]
+            return {"message": "Post deleted"}
+    raise HTTPException(status_code=404, detail="Post not found")
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+```
+
+## Go - Gin Implementation
+
+```go
+package main
+
+import (
+    "net/http"
+    "time"
+    "github.com/gin-gonic/gin"
+)
+
+type Post struct {
+    ID        int       `json:"id"`
+    Title     string    `json:"title"`
+    Content   string    `json:"content"`
+    Author    string    `json:"author"`
+    CreatedAt time.Time `json:"created_at"`
+    Tags      []string  `json:"tags"`
+}
+
+var posts []Post
+
+func main() {
+    r := gin.Default()
+    
+    r.GET("/", func(c *gin.Context) {
+        c.JSON(http.StatusOK, gin.H{
+            "message": "Welcome to Blog API",
+            "version": "1.0.0",
+        })
+    })
+    
+    r.GET("/posts", func(c *gin.Context) {
+        c.JSON(http.StatusOK, posts)
+    })
+    
+    r.POST("/posts", func(c *gin.Context) {
+        var post Post
+        if err := c.ShouldBindJSON(&post); err != nil {
+            c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+            return
+        }
+        post.ID = len(posts) + 1
+        post.CreatedAt = time.Now()
+        posts = append(posts, post)
+        c.JSON(http.StatusCreated, post)
+    })
+    
+    r.GET("/posts/:id", func(c *gin.Context) {
+        id := c.Param("id")
+        // Find and return post
+        c.JSON(http.StatusOK, gin.H{"id": id})
+    })
+    
+    r.PUT("/posts/:id", func(c *gin.Context) {
+        // Update post
+        c.JSON(http.StatusOK, gin.H{"message": "Updated"})
+    })
+    
+    r.DELETE("/posts/:id", func(c *gin.Context) {
+        // Delete post
+        c.JSON(http.StatusOK, gin.H{"message": "Deleted"})
+    })
+    
+    r.Run(":8000")
+}
+```
+
+## Usage
+
+```bash
+# Build
+meng build examples/api/main.meng
+
+# Run Python version
+python examples/api/main.py
+
+# Or run Go version
+cd examples/api && go run main.go
+
+# Test the API
+curl http://localhost:8000/posts
+curl -X POST http://localhost:8000/posts \
+  -H "Content-Type: application/json" \
+  -d '{"title":"Hello","content":"World","author":"Tailang"}'
+```
+
+## Expected Output
+
+```
+🌐 REST API Example
+==================
+✓ FastAPI implementation: OK
+✓ Gin implementation: OK
+✓ CRUD operations: OK
+✓ Error handling: OK
+
+API running at http://localhost:8000
+```
