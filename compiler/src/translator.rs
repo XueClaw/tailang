@@ -102,6 +102,14 @@ pub struct Translator {
 }
 
 impl Translator {
+    /// 将 IRProgram 转换为 TaiFile
+    pub fn translate_to_tai(&self, ir: &IRProgram, name: &str) -> crate::tai::TaiFile {
+        let tai_translator = crate::tai::TaiTranslator::new();
+        tai_translator.translate(ir, name)
+    }
+}
+
+impl Translator {
     pub fn new() -> Self {
         Self {
             functions: Vec::new(),

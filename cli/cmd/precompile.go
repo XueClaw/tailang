@@ -10,15 +10,19 @@ import (
 
 var precompileCmd = &cobra.Command{
 	Use:   "precompile [file.meng]",
-	Short: "Precompile .meng file to .tai",
-	Long: `Precompile a .meng file (casual natural language) to .tai file (structured natural language).
+	Short: "Precompile .meng file to .tai JSON",
+	Long: `Precompile a .meng file (casual natural language) to normalized .tai JSON.
 
-This uses LLM (DashScope/Qwen) to understand the intent and convert to structured format.
+This uses the configured Tailang LLM provider to understand the intent and convert it into normalized Tailang IR.
 
 Environment variables:
-  DASHSCOPE_API_KEY     API key for DashScope
-  DASHSCOPE_BASE_URL    Base URL (default: https://dashscope.aliyuncs.com/api/v1)
-  PRECOMPILER_MODEL     Model name (default: qwen-turbo)
+  TAILANG_LLM_PROVIDER  Provider name (dashscope, ollama, custom)
+  TAILANG_LLM_MODEL     Model name override
+  TAILANG_LLM_BASE_URL  Custom/OpenAI-compatible base URL
+  TAILANG_LLM_API_KEY   Shared API key override
+  DASHSCOPE_API_KEY     DashScope API key
+  DASHSCOPE_BASE_URL    DashScope base URL
+  OLLAMA_BASE_URL       Ollama base URL
 
 Examples:
   meng precompile src/main.meng
@@ -37,14 +41,6 @@ Examples:
 		fmt.Printf("🔄 Precompiling %s...\n", inputFile)
 		fmt.Printf("   Output: %s\n\n", outputFile)
 		
-		// Check environment variables
-		apiKey := os.Getenv("DASHSCOPE_API_KEY")
-		if apiKey == "" {
-			return fmt.Errorf("DASHSCOPE_API_KEY environment variable not set\n" +
-				"Please set it in .env file or export it:\n" +
-				"  export DASHSCOPE_API_KEY=your-api-key")
-		}
-		
 		fmt.Println("Step 1/3: Reading .meng file...")
 		content, err := os.ReadFile(inputFile)
 		if err != nil {
@@ -52,18 +48,12 @@ Examples:
 		}
 		fmt.Println("  ✓ File read successfully")
 		
-		fmt.Println("Step 2/3: Calling LLM API...")
-		// TODO: Call Rust precompiler library
-		// For now, create a placeholder .tai file
-		taiContent := fmt.Sprintf(`# Precompiled from %s
-# TODO: Implement LLM integration
-
-模块 预编译占位：
-  功能 占位 ():
-    返回 "待实现"
-`, inputFile)
-		
-		fmt.Println("  ✓ LLM API called")
+		fmt.Println("Step 2/3: Calling configured provider...")
+		taiContent, err := precompileMeng(string(content))
+		if err != nil {
+			return fmt.Errorf("precompilation failed: %w", err)
+		}
+		fmt.Println("  ✓ Provider returned normalized .tai JSON")
 		
 		fmt.Println("Step 3/3: Writing .tai file...")
 		err = os.WriteFile(outputFile, []byte(taiContent), 0644)
@@ -82,5 +72,6 @@ Examples:
 }
 
 func init() {
+	rootCmd.AddCommand(precompileCmd)
 	precompileCmd.Flags().StringP("output", "o", "", "Output .tai file path")
 }

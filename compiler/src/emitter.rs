@@ -1,4 +1,5 @@
 use crate::translator::{IRProgram, IRFunction, IRVariable, IRInstruction, IRExpression};
+use crate::codegen::compile_tai_to_executable;
 
 /// 目标语言
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -6,6 +7,7 @@ pub enum TargetLanguage {
     Python,
     Go,
     JavaScript,
+    MachineCode,  // LLVM 机器码
 }
 
 /// 发射器错误
@@ -45,9 +47,28 @@ impl Emitter {
     }
 
     pub fn emit(mut self, program: IRProgram) -> Result<String, EmitError> {
-        // 生成函数
-        for function in &program.functions {
-            self.emit_function(function)?;
+        match self.target {
+            TargetLanguage::MachineCode => {
+                // 使用 LLVM 编译为机器码
+                // 1. 将 IRProgram 转换为 .tai 格式
+                let translator = crate::translator::Translator;
+                let tai = translator.translate_to_tai(&program, "tailang_program");
+                
+                // 2. 序列化 .tai
+                let tai_translator = crate::tai::TaiTranslator::new();
+                let tai_json = tai_translator.serialize(&tai)
+                    .map_err(|e| EmitError { message: e })?;
+                
+                // 3. 使用 LLVM 编译为机器码
+                // compile_tai_to_executable(&tai_json, "output")
+                //     .map_err(|e| EmitError { message: e })?;
+                
+                Ok(format!("// .tai 格式:\n{}\n// LLVM 编译实现中...", tai_json))
+            }
+            _ => {
+                // 生成函数
+                for function in &program.functions {
+                    self.emit_function(function)?;
             self.writeln("");
         }
 
