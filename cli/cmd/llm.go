@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -89,6 +91,33 @@ type taiUnresolvedItem struct {
 	Kind        string `json:"kind"`
 	Description string `json:"description"`
 }
+
+type taiJSONSchemaDoc struct {
+	Required []string `json:"required"`
+	Defs     struct {
+		Source struct {
+			Required []string `json:"required"`
+		} `json:"source"`
+		Module struct {
+			Required []string `json:"required"`
+		} `json:"module"`
+		Function struct {
+			Required []string `json:"required"`
+		} `json:"function"`
+		CodeBlock struct {
+			Required []string `json:"required"`
+		} `json:"codeBlock"`
+		UnresolvedItem struct {
+			Required []string `json:"required"`
+		} `json:"unresolvedItem"`
+	} `json:"$defs"`
+}
+
+var (
+	taiSchemaOnce sync.Once
+	taiSchemaDoc  taiJSONSchemaDoc
+	taiSchemaErr  error
+)
 
 type dashScopeProvider struct{}
 type ollamaProvider struct{}
@@ -358,33 +387,8 @@ func normalizeTaiOutput(raw string, config llmConfig) (string, error) {
 		doc.UnresolvedItems = []taiUnresolvedItem{}
 	}
 
-	for i := range doc.Modules {
-		if strings.TrimSpace(doc.Modules[i].Name) == "" {
-			return "", fmt.Errorf("invalid .tai schema: modules[%d].name is required", i)
-		}
-		if doc.Modules[i].Functions == nil {
-			doc.Modules[i].Functions = []taiFunction{}
-		}
-		for j := range doc.Modules[i].Functions {
-			if strings.TrimSpace(doc.Modules[i].Functions[j].Name) == "" {
-				return "", fmt.Errorf("invalid .tai schema: modules[%d].functions[%d].name is required", i, j)
-			}
-			if doc.Modules[i].Functions[j].Params == nil {
-				doc.Modules[i].Functions[j].Params = []string{}
-			}
-			if doc.Modules[i].Functions[j].Validations == nil {
-				doc.Modules[i].Functions[j].Validations = []string{}
-			}
-		}
-	}
-
-	for i := range doc.CodeBlocks {
-		if strings.TrimSpace(doc.CodeBlocks[i].Language) == "" {
-			return "", fmt.Errorf("invalid .tai schema: code_blocks[%d].language is required", i)
-		}
-		if strings.TrimSpace(doc.CodeBlocks[i].Code) == "" {
-			return "", fmt.Errorf("invalid .tai schema: code_blocks[%d].code is required", i)
-		}
+	if err := validateTaiAgainstSchema(&doc); err != nil {
+		return "", err
 	}
 
 	normalized, err := json.MarshalIndent(doc, "", "  ")
@@ -435,4 +439,128 @@ func getEnvFloat(key string, fallback float64) float64 {
 		return fallback
 	}
 	return parsed
+}
+
+func validateTaiAgainstSchema(doc *taiSchema) error {
+	schema, err := loadTaiSchema()
+	if err != nil {
+		return err
+	}
+
+	for _, field := range schema.Required {
+		switch field {
+		case "version":
+			if strings.TrimSpace(doc.Version) == "" {
+				return fmt.Errorf("invalid .tai schema: version is required")
+			}
+		case "source":
+			if err := requireStringFields("source", map[string]string{
+				"provider":    doc.Source.Provider,
+				"model":       doc.Source.Model,
+				"temperature": doc.Source.Temperature,
+			}, schema.Defs.Source.Required); err != nil {
+				return err
+			}
+		case "modules":
+			for i := range doc.Modules {
+				if doc.Modules[i].Functions == nil {
+					doc.Modules[i].Functions = []taiFunction{}
+				}
+				if err := requireStringFields(fmt.Sprintf("modules[%d]", i), map[string]string{
+					"name":        doc.Modules[i].Name,
+					"description": doc.Modules[i].Description,
+				}, schema.Defs.Module.Required); err != nil {
+					return err
+				}
+				for j := range doc.Modules[i].Functions {
+					if doc.Modules[i].Functions[j].Params == nil {
+						doc.Modules[i].Functions[j].Params = []string{}
+					}
+					if doc.Modules[i].Functions[j].Validations == nil {
+						doc.Modules[i].Functions[j].Validations = []string{}
+					}
+					if err := requireStringFields(fmt.Sprintf("modules[%d].functions[%d]", i, j), map[string]string{
+						"name":        doc.Modules[i].Functions[j].Name,
+						"description": doc.Modules[i].Functions[j].Description,
+					}, schema.Defs.Function.Required); err != nil {
+						return err
+					}
+				}
+			}
+		case "code_blocks":
+			for i := range doc.CodeBlocks {
+				if err := requireStringFields(fmt.Sprintf("code_blocks[%d]", i), map[string]string{
+					"language": doc.CodeBlocks[i].Language,
+					"code":     doc.CodeBlocks[i].Code,
+				}, schema.Defs.CodeBlock.Required); err != nil {
+					return err
+				}
+			}
+		case "unresolved_items":
+			for i := range doc.UnresolvedItems {
+				if err := requireStringFields(fmt.Sprintf("unresolved_items[%d]", i), map[string]string{
+					"kind":        doc.UnresolvedItems[i].Kind,
+					"description": doc.UnresolvedItems[i].Description,
+				}, schema.Defs.UnresolvedItem.Required); err != nil {
+					return err
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+func requireStringFields(prefix string, values map[string]string, required []string) error {
+	for _, field := range required {
+		if strings.TrimSpace(values[field]) == "" {
+			return fmt.Errorf("invalid .tai schema: %s.%s is required", prefix, field)
+		}
+	}
+	return nil
+}
+
+func loadTaiSchema() (taiJSONSchemaDoc, error) {
+	taiSchemaOnce.Do(func() {
+		path, err := findTaiSchemaPath()
+		if err != nil {
+			taiSchemaErr = err
+			return
+		}
+
+		content, err := os.ReadFile(path)
+		if err != nil {
+			taiSchemaErr = fmt.Errorf("read .tai schema failed: %w", err)
+			return
+		}
+
+		if err := json.Unmarshal(content, &taiSchemaDoc); err != nil {
+			taiSchemaErr = fmt.Errorf("parse .tai schema failed: %w", err)
+		}
+	})
+
+	return taiSchemaDoc, taiSchemaErr
+}
+
+func findTaiSchemaPath() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory failed: %w", err)
+	}
+
+	dir := wd
+	for {
+		candidate := filepath.Join(dir, "docs", "spec", "tai.schema.json")
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate, nil
+		}
+
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	return "", fmt.Errorf("unable to locate docs/spec/tai.schema.json from %s", wd)
 }
