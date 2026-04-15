@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 var testCmd = &cobra.Command{
@@ -23,7 +25,8 @@ Examples:
 			testPath = args[0]
 		}
 		
-		fmt.Println("🧪 Running tests...\n")
+		fmt.Println("🧪 Running tests...")
+		fmt.Println()
 		
 		// Find all .meng test files
 		var testFiles []string
@@ -139,6 +142,8 @@ import bcrypt
 }
 
 func init() {
+	rootCmd.AddCommand(testCmd)
+	rootCmd.AddCommand(docCmd)
 	docCmd.Flags().String("format", "markdown", "Output format (markdown, html, pdf)")
 	docCmd.Flags().StringP("output", "o", "docs", "Output directory")
 }

@@ -1,12 +1,15 @@
 package cmd
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 var buildCmd = &cobra.Command{
@@ -16,8 +19,8 @@ var buildCmd = &cobra.Command{
 
 The compiler will:
 1. Parse the .meng file
-2. Precompile natural language to structured logic
-3. Extract and validate code supplements
+2. Precompile natural language to normalized .tai JSON
+3. Extract and validate code supplements from .tai
 4. Compile to native executable
 
 Examples:
@@ -45,6 +48,15 @@ Examples:
 		target, _ := cmd.Flags().GetString("target")
 		if target == "" {
 			target = runtime.GOOS
+		}
+		
+		// Load .env file
+		envPath := findEnvFile(inputFile)
+		if envPath != "" {
+			loadEnvFile(envPath)
+			fmt.Printf("   📝 Loaded .env from: %s\n\n", envPath)
+		} else {
+			fmt.Println()
 		}
 		
 		// Add extension based on platform
@@ -76,11 +88,11 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("precompilation failed: %w", err)
 		}
-		fmt.Println("  ✓ Natural language expanded")
+		fmt.Println("  ✓ .tai normalized")
 		
 		// Step 3: Extract code supplements
-		fmt.Println("Step 3/5: Extracting code supplements...")
-		codeBlocks, err := extractCodeBlocks(precompiled)
+		fmt.Println("Step 3/5: Extracting code supplements from .tai...")
+		codeBlocks, err := extractCodeBlocksFromTai(precompiled)
 		if err != nil {
 			return fmt.Errorf("failed to extract code blocks: %w", err)
 		}
@@ -107,7 +119,7 @@ Examples:
 		fmt.Printf("📦 Output: %s\n", outputName)
 		fmt.Printf("📊 Size: %s\n", formatFileSize(outputName))
 		fmt.Printf("\n🚀 Run with:\n")
-		fmt.Printf("   ./ %s\n", outputName)
+		fmt.Printf("   ./%s\n", outputName)
 		fmt.Printf("\nOr use:\n")
 		fmt.Printf("   meng run %s\n", inputFile)
 		
@@ -116,50 +128,75 @@ Examples:
 }
 
 func init() {
+	rootCmd.AddCommand(buildCmd)
 	buildCmd.Flags().StringP("output", "o", "", "Output filename")
 	buildCmd.Flags().String("target", "", "Target platform (windows, macos, linux)")
 }
 
-// precompileMeng expands natural language to structured logic
-func precompileMeng(content string) (string, error) {
-	// TODO: Integrate with LLM for precompilation
-	// For now, return content as-is
-	return content, nil
-}
-
-// extractCodeBlocks extracts code blocks from .meng content
-func extractCodeBlocks(content string) ([]CodeBlock, error) {
-	var blocks []CodeBlock
+// loadEnvFile loads environment variables from .env file
+func loadEnvFile(path string) error {
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
 	
-	// Simple parser for ```language ... ``` blocks
-	lines := strings.Split(content, "\n")
-	inCodeBlock := false
-	var currentBlock CodeBlock
-	
-	for i, line := range lines {
-		trimmed := strings.TrimSpace(line)
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		// Skip comments and empty lines
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
 		
-		if strings.HasPrefix(trimmed, "```") && !inCodeBlock {
-			// Start of code block
-			inCodeBlock = true
-			currentBlock.Language = strings.TrimPrefix(trimmed, "```")
-			currentBlock.StartLine = i + 1
-			currentBlock.Code = ""
-		} else if strings.HasPrefix(trimmed, "```") && inCodeBlock {
-			// End of code block
-			inCodeBlock = false
-			currentBlock.EndLine = i + 1
-			blocks = append(blocks, currentBlock)
-			currentBlock = CodeBlock{}
-		} else if inCodeBlock {
-			currentBlock.Code += line + "\n"
+		parts := strings.SplitN(line, "=", 2)
+		if len(parts) == 2 {
+			key := strings.TrimSpace(parts[0])
+			value := strings.TrimSpace(parts[1])
+			os.Setenv(key, value)
 		}
 	}
 	
-	if inCodeBlock {
-		return nil, fmt.Errorf("unclosed code block starting at line %d", currentBlock.StartLine)
+	return scanner.Err()
+}
+
+// findEnvFile searches for .env file in project directory
+func findEnvFile(inputFile string) string {
+	// Start from input file's directory and go up
+	dir := filepath.Dir(inputFile)
+	
+	for {
+		envPath := filepath.Join(dir, ".env")
+		if _, err := os.Stat(envPath); err == nil {
+			return envPath
+		}
+		
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			// Reached root
+			break
+		}
+		dir = parent
 	}
 	
+	return ""
+}
+
+// extractCodeBlocksFromTai extracts code blocks from normalized .tai JSON.
+func extractCodeBlocksFromTai(content string) ([]CodeBlock, error) {
+	var doc taiSchema
+	if err := json.Unmarshal([]byte(content), &doc); err != nil {
+		return nil, fmt.Errorf("invalid .tai JSON: %w", err)
+	}
+
+	blocks := make([]CodeBlock, 0, len(doc.CodeBlocks))
+	for _, block := range doc.CodeBlocks {
+		blocks = append(blocks, CodeBlock{
+			Language: block.Language,
+			Code:     block.Code,
+		})
+	}
+
 	return blocks, nil
 }
 
@@ -174,7 +211,7 @@ type CodeBlock struct {
 // generateIR generates intermediate representation
 func generateIR(content string, codeBlocks []CodeBlock) (*IR, error) {
 	return &IR{
-		Source:    content,
+		Source:     content,
 		CodeBlocks: codeBlocks,
 	}, nil
 }

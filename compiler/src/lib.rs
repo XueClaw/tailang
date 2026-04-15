@@ -6,11 +6,17 @@ pub mod lexer;
 pub mod parser;
 pub mod translator;
 pub mod emitter;
+pub mod codegen;
+pub mod tai;
+pub mod precompiler;
 
 pub use lexer::Lexer;
 pub use parser::Parser;
 pub use translator::Translator;
-pub use emitter::Emitter;
+pub use emitter::{Emitter, TargetLanguage};
+pub use codegen::{CodeGenerator, compile_tai_to_executable};
+pub use tai::{TaiCodeBlock, TaiFile, TaiFunction, TaiModule, TaiSource, TaiTranslator, TaiUnresolvedItem};
+pub use precompiler::{Precompiler, PrecompilerConfig, precompile_meng_file};
 
 /// Compile a .meng file to executable
 pub fn compile(input: &str) -> Result<Vec<u8>, String> {

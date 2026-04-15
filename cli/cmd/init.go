@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
 var initCmd = &cobra.Command{
@@ -85,14 +87,14 @@ node_modules/
 		fmt.Printf("  ✓ Created .gitignore\n")
 		
 		// Create src/main.meng
-		mainMeng := `# Welcome to Tailang! 🎉
+		mainMeng := `# Welcome to Tailang!
 # This is your first .meng file
 
 # Natural language description
 打印 "Hello, Tailang!" qwq
 
 # Optional: Code supplement in any language
-```python
+` + "```python" + `
 # Python example
 print("Hello from Python!")
 
@@ -100,7 +102,7 @@ def greet(name):
     return f"Hello, {name}!"
 
 print(greet("Tailang"))
-```
+` + "```" + `
 
 # You can also use other languages:
 # - Go, Rust, JavaScript, TypeScript, Java, C++, etc.
@@ -231,4 +233,8 @@ func isValidProjectName(name string) bool {
 	}
 	
 	return true
+}
+
+func init() {
+	rootCmd.AddCommand(initCmd)
 }

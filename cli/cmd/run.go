@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/spf13/cobra"
 )
 
 var runCmd = &cobra.Command{
@@ -88,5 +90,6 @@ Examples:
 }
 
 func init() {
+	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().String("args", "", "Additional arguments to pass to the program")
 }

@@ -1,0 +1,51 @@
+# Tailang Git Ignore
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 编译输出
+*.exe
+*.app
+*.bin
+*.o
+*.so
+*.dll
+target/
+dist/
+build/
+
+# 缓存文件
+.meng.cache
+*.cache
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 依赖
+vendor/
+node_modules/
+
+# Rust
+**/target/
+**/Cargo.lock
+
+# Go
+**/go.sum
+**/vendor/
+
+# Flutter/Dart
+**/build/
+**/.dart_tool/
+**/.flutter-plugins
+**/.packages

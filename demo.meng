@@ -1,0 +1,13 @@
+# 邮箱密码登录 qwq
+
+```python
+import bcrypt
+
+def verify_password(stored, provided):
+    return bcrypt.checkpw(provided.encode(), stored.encode())
+```
+
+如果 验证成功:
+    返回 令牌
+否则:
+    返回 错误
