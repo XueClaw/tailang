@@ -1,7 +1,7 @@
 # Tailang CLI 使用指南
 
 **版本**: 0.1.0  
-**最后更新**: 2026-04-14
+**最后更新**: 2026-04-16
 
 ---
 
@@ -83,6 +83,12 @@ print("Hello from Python!")
 ### 3. 编译运行
 
 ```bash
+# 预编译
+meng precompile src/main.meng
+
+# 校验 .tai
+meng validate-tai src/main.tai
+
 # 编译
 meng build src/main.meng
 
@@ -148,8 +154,8 @@ meng build src/main.meng --target macos
 Step 1/5: Reading .meng file...
   ✓ File read successfully
 Step 2/5: Precompiling natural language...
-  ✓ Natural language expanded
-Step 3/5: Extracting code supplements...
+  ✓ .tai normalized
+Step 3/5: Extracting code supplements from .tai...
   ✓ Found 1 code block(s)
 Step 4/5: Generating intermediate representation...
   ✓ IR generated
@@ -166,6 +172,51 @@ Step 5/5: Compiling to executable...
 
 Or use:
    meng run src/main.meng
+```
+
+**说明**:
+- 当前 `meng build` 的预编译与 `.tai` 校验链路已接通
+- 当前生成的可执行文件仍为占位产物，真实编译后端仍在开发中
+
+---
+
+### meng precompile
+
+将 `.meng` 预编译为规范化的 `.tai` JSON。
+
+```bash
+meng precompile <file.meng> [选项]
+```
+
+**选项**:
+- `-o, --output <path>` - 输出 `.tai` 文件路径
+
+**环境变量**:
+- `TAILANG_LLM_PROVIDER` - Provider 名称 (`dashscope`, `ollama`, `custom`)
+- `TAILANG_LLM_MODEL` - 模型名覆盖
+- `TAILANG_LLM_BASE_URL` - 自定义/OpenAI 兼容接口地址
+- `TAILANG_LLM_API_KEY` - 通用 API Key
+- `DASHSCOPE_API_KEY` - 百炼 API Key
+- `DASHSCOPE_BASE_URL` - 百炼 Base URL
+- `OLLAMA_BASE_URL` - Ollama Base URL
+
+**示例**:
+```bash
+meng precompile src/main.meng
+meng precompile src/main.meng -o src/main.tai
+```
+
+**输出**:
+```
+🔄 Precompiling src/main.meng...
+   Output: src/main.tai
+
+Step 1/3: Reading .meng file...
+  ✓ File read successfully
+Step 2/3: Calling configured provider...
+  ✓ Provider returned normalized .tai JSON
+Step 3/3: Writing .tai file...
+  ✓ .tai file written
 ```
 
 ---
@@ -244,6 +295,9 @@ Found 3 test file(s):
 ✅ Tests complete: 3 passed, 0 failed
 ```
 
+**说明**:
+- 当前 `meng test` 命令已存在，但底层测试执行仍是简化实现
+
 ---
 
 ### meng doc
@@ -280,6 +334,9 @@ meng doc --format html -o docs/html
 ✅ Documentation generated: docs/README.md
 ```
 
+**说明**:
+- 当前 `meng doc` 命令已存在，但文档生成仍是简化实现
+
 ---
 
 ### meng version
@@ -295,6 +352,26 @@ meng version
 meng version 0.1.0
 tailang-compiler 0.1.0
 go 1.21
+```
+
+---
+
+### meng validate-tai
+
+校验 `.tai` 文件是否符合共享 schema。
+
+```bash
+meng validate-tai <file.tai>
+```
+
+**示例**:
+```bash
+meng validate-tai src/main.tai
+```
+
+**输出**:
+```
+✓ Valid .tai: src/main.tai
 ```
 
 ---
@@ -415,14 +492,12 @@ export PATH=$PATH:$(go env GOPATH)/bin
 
 ### Q: 编译失败
 
-**A**: 检查 .meng 文件语法:
+**A**: 先检查预编译输出和 `.tai` 结构:
 
 ```bash
-# 验证文件存在
-ls src/main.meng
-
-# 检查语法错误
-meng build src/main.meng --verbose
+meng precompile src/main.meng
+meng validate-tai src/main.tai
+meng build src/main.meng
 ```
 
 ### Q: 如何调试？

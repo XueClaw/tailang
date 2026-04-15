@@ -8,7 +8,8 @@ Tailang 是一种创新的编程语言，让每个人都能用母语编程。
 
 - **零语法** - 会说话就会编程
 - **全语言支持** - 支持 50+ 编程语言补充
-- **一步编译** - 直接编译为可执行文件
+- **结构化预编译** - `.meng` 预编译为稳定的 `.tai` JSON IR
+- **Provider 可插拔** - 兼容阿里云百炼、Ollama，并预留更多扩展
 - **确定性** - 预编译固定温度，可版本控制
 
 ## 📁 项目结构
@@ -36,7 +37,7 @@ tailang/
 │   │   └── widgets/
 │   └── pubspec.yaml
 ├── docs/              # 文档
-│   ├── PRD.md
+│   ├── CLI_GUIDE.md
 │   └── spec/
 ├── examples/          # 示例
 │   └── hello/
@@ -79,17 +80,31 @@ def verify_password(stored, provided):
 ### 编译运行
 
 ```bash
+# 预编译为 .tai JSON
+meng precompile src/main.meng
+
+# 校验 .tai 结构
+meng validate-tai src/main.tai
+
+# 编译
 meng build src/main.meng
-# 输出：main.exe (Windows) / main.app (macOS)
 
 meng run src/main.meng
 ```
 
 ## 📚 文档
 
-- [PRD v2.1](docs/PRD.md) - 产品需求文档
-- [语言规范](docs/spec/) - 语言规范
+- [CLI 指南](docs/CLI_GUIDE.md) - 命令行使用说明
+- [`.tai` Schema](docs/spec/tai.schema.json) - 统一中间表示结构定义
+- [`.tai` Schema 说明](docs/spec/TAI_SCHEMA.md) - Go/Rust 共用约束说明
 - [示例](examples/) - 示例代码
+
+## ⚠️ 当前状态
+
+- `meng precompile` 已输出规范化 `.tai` JSON
+- `meng validate-tai` 已可校验 `.tai` 是否符合共享 schema
+- `meng build` 当前仍生成占位可执行文件，真实编译后端仍在完善中
+- `meng test` 和 `meng doc` 已有命令入口，但实现仍未完全成熟
 
 ## 🛠️ 技术栈
 
@@ -98,7 +113,7 @@ meng run src/main.meng
 | 编译器 | Rust | tree-sitter |
 | CLI | Go | cobra |
 | GUI | Dart | Flutter |
-| 预编译 | Go | Ollama LLM |
+| 预编译 | Go / Rust | DashScope / Ollama / Custom Provider |
 
 ## 📋 开发计划
 
