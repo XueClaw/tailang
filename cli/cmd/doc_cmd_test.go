@@ -12,7 +12,7 @@ func TestGenerateTaiDocsFromTaiFile(t *testing.T) {
 	input := filepath.Join(tempDir, "main.tai")
 	output := filepath.Join(tempDir, "docs")
 
-	content := "{\n  \"version\": \"0.1.0\",\n  \"source\": {\n    \"provider\": \"custom\",\n    \"model\": \"test\",\n    \"temperature\": \"0\"\n  },\n  \"modules\": [\n    {\n      \"name\": \"auth\",\n      \"description\": \"认证流程\",\n      \"functions\": [\n        {\n          \"name\": \"login\",\n          \"params\": [\"email\", \"password\"],\n          \"description\": \"邮箱密码登录\",\n          \"validations\": [\"邮箱不能为空\"]\n        }\n      ]\n    }\n  ],\n  \"code_blocks\": [\n    {\n      \"language\": \"python\",\n      \"code\": \"print('hello')\"\n    }\n  ],\n  \"unresolved_items\": [\n    {\n      \"kind\": \"rule\",\n      \"description\": \"缺少密码复杂度规则\"\n    }\n  ]\n}\n"
+	content := ".版本 3\n.程序集 auth\n.说明 \"认证流程\"\n\n.子程序 login\n.参数 email, 任意型\n.参数 password, 任意型\n.说明 \"邮箱密码登录\"\n.校验 \"邮箱不能为空\"\n\n.代码 python\nprint('hello')\n.代码结束\n\n.待定 rule, \"缺少密码复杂度规则\"\n"
 	if err := os.WriteFile(input, []byte(content), 0644); err != nil {
 		t.Fatalf("write input: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestGenerateTaiDocsFromDirectoryPrefersTai(t *testing.T) {
 		t.Fatalf("write test meng: %v", err)
 	}
 
-	content := "{\n  \"version\": \"0.1.0\",\n  \"source\": {\n    \"provider\": \"custom\",\n    \"model\": \"test\",\n    \"temperature\": \"0\"\n  },\n  \"modules\": [\n    {\n      \"name\": \"main\",\n      \"description\": \"主模块\",\n      \"functions\": []\n    }\n  ],\n  \"code_blocks\": [],\n  \"unresolved_items\": []\n}\n"
+	content := ".版本 3\n.程序集 main\n.说明 \"主模块\"\n"
 	if err := os.WriteFile(taiPath, []byte(content), 0644); err != nil {
 		t.Fatalf("write tai: %v", err)
 	}

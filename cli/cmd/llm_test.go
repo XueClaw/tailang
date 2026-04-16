@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,11 +30,14 @@ func TestNormalizeTaiOutputAppliesDefaults(t *testing.T) {
 		t.Fatalf("normalizeTaiOutput returned error: %v", err)
 	}
 
-	if !strings.Contains(out, `"provider": "ollama"`) {
+	if !strings.Contains(out, `.元信息 提供者 = "ollama"`) {
 		t.Fatalf("expected provider default to be applied, got: %s", out)
 	}
-	if !strings.Contains(out, `"model": "qwen2.5-coder:latest"`) {
+	if !strings.Contains(out, `.元信息 模型 = "qwen2.5-coder:latest"`) {
 		t.Fatalf("expected model default to be applied, got: %s", out)
+	}
+	if !strings.Contains(out, ".版本 0.1.0") {
+		t.Fatalf("expected textual .tai output, got: %s", out)
 	}
 }
 
@@ -179,7 +181,8 @@ func TestGenerateIRFromNormalizedTaiFlow(t *testing.T) {
 	}
 }
 
-func TestCompilePlaceholderFromNormalizedTaiFlow(t *testing.T) {
+func TestCompileToExecutableReturnsNotImplemented(t *testing.T) {
+	t.Setenv("TAILANG_DISABLE_RUST_BACKEND", "1")
 	input := `{
 	  "version": "0.1.0",
 	  "source": {
@@ -223,11 +226,56 @@ func TestCompilePlaceholderFromNormalizedTaiFlow(t *testing.T) {
 
 	tempDir := t.TempDir()
 	output := filepath.Join(tempDir, "tailang-test.exe")
-	if err := compileToExecutable(ir, output, "windows"); err != nil {
-		t.Fatalf("compileToExecutable returned error: %v", err)
+	err = compileToExecutable(ir, output, "windows")
+	if err == nil {
+		t.Fatal("expected compileToExecutable to fail in test environment")
+	}
+	if !strings.Contains(err.Error(), "TAILANG_DISABLE_RUST_BACKEND") {
+		t.Fatalf("expected backend-disabled error, got %v", err)
+	}
+}
+
+func TestRenderTaiTextFromSchema(t *testing.T) {
+	doc := taiSchema{
+		Version: "3",
+		Source: taiSource{
+			Provider:    "custom",
+			Model:       "test-model",
+			Temperature: "0",
+		},
+		Modules: []taiModule{
+			{
+				Name:        "认证",
+				Description: "认证流程",
+				Functions: []taiFunction{
+					{
+						Name:        "登录",
+						Params:      []string{"邮箱", "密码"},
+						Description: "邮箱密码登录",
+						Validations: []string{"邮箱不能为空"},
+					},
+				},
+			},
+		},
+		CodeBlocks: []taiCodeBlock{
+			{Language: "Rust", Code: "println!(\"hello\");"},
+		},
+		UnresolvedItems: []taiUnresolvedItem{
+			{Kind: "规则", Description: "缺少密码复杂度规则"},
+		},
 	}
 
-	if _, err := os.Stat(output); err != nil {
-		t.Fatalf("expected output file to exist: %v", err)
+	out := renderTaiTextFromSchema(doc)
+	if !strings.Contains(out, ".程序集 认证") {
+		t.Fatalf("expected module declaration, got: %s", out)
+	}
+	if !strings.Contains(out, ".子程序 登录") {
+		t.Fatalf("expected function declaration, got: %s", out)
+	}
+	if !strings.Contains(out, ".代码 Rust") {
+		t.Fatalf("expected code block, got: %s", out)
+	}
+	if !strings.Contains(out, `.待定 规则, "缺少密码复杂度规则"`) {
+		t.Fatalf("expected unresolved declaration, got: %s", out)
 	}
 }

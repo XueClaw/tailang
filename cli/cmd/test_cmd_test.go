@@ -24,7 +24,7 @@ func TestRunMengTestFilePasses(t *testing.T) {
 	target := filepath.Join(srcDir, "main.meng")
 	testFile := filepath.Join(testsDir, "main_test.meng")
 
-	targetContent := "{\n  \"version\": \"0.1.0\",\n  \"source\": {\n    \"provider\": \"custom\",\n    \"model\": \"test\",\n    \"temperature\": \"0\"\n  },\n  \"modules\": [\n    {\n      \"name\": \"main\",\n      \"description\": \"打印 \\\"Hello\\\"\",\n      \"functions\": []\n    }\n  ],\n  \"code_blocks\": [],\n  \"unresolved_items\": []\n}\n"
+	targetContent := ".版本 3\n.程序集 main\n.说明 \"Hello\"\n"
 	testContent := "测试 打印功能:\n  期望 输出 \"Hello\"\n"
 
 	if err := os.WriteFile(target, []byte(targetContent), 0644); err != nil {
@@ -57,7 +57,7 @@ func TestRunMengTestFileFailsWhenOutputMissing(t *testing.T) {
 	target := filepath.Join(srcDir, "main.meng")
 	testFile := filepath.Join(testsDir, "main_test.meng")
 
-	targetContent := "{\n  \"version\": \"0.1.0\",\n  \"source\": {\n    \"provider\": \"custom\",\n    \"model\": \"test\",\n    \"temperature\": \"0\"\n  },\n  \"modules\": [\n    {\n      \"name\": \"main\",\n      \"description\": \"打印 \\\"Hello\\\"\",\n      \"functions\": []\n    }\n  ],\n  \"code_blocks\": [],\n  \"unresolved_items\": []\n}\n"
+	targetContent := ".版本 3\n.程序集 main\n.说明 \"Hello\"\n"
 	testContent := "测试 打印功能:\n  期望 输出 \"World\"\n"
 
 	if err := os.WriteFile(target, []byte(targetContent), 0644); err != nil {

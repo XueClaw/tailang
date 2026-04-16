@@ -1,0 +1,15 @@
+.版本 3
+.元信息 提供者 = "custom"
+.元信息 模型 = "manual-test"
+.元信息 温度 = "0"
+
+.程序集 main
+.说明 "Hello from manual tai"
+
+.子程序 主程序
+.说明 "打印问候"
+.待定 实现, "等待生成原生执行语法"
+
+.代码 Python
+print("Hello from code block")
+.代码结束

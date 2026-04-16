@@ -10,10 +10,10 @@ import (
 
 var precompileCmd = &cobra.Command{
 	Use:   "precompile [file.meng]",
-	Short: "Precompile .meng file to .tai JSON",
-	Long: `Precompile a .meng file (casual natural language) to normalized .tai JSON.
+	Short: "Precompile .meng file to .tai source",
+	Long: `Precompile a .meng file (casual natural language) to normalized .tai source.
 
-This uses the configured Tailang LLM provider to understand the intent and convert it into normalized Tailang IR.
+This uses the configured Tailang LLM provider to understand the intent and convert it into normalized Tailang .tai v0.3 source.
 
 Environment variables:
   TAILANG_LLM_PROVIDER  Provider name (dashscope, ollama, custom)
@@ -53,7 +53,7 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("precompilation failed: %w", err)
 		}
-		fmt.Println("  ✓ Provider returned normalized .tai JSON")
+		fmt.Println("  ✓ Provider returned normalized .tai source")
 		
 		fmt.Println("Step 3/3: Writing .tai file...")
 		err = os.WriteFile(outputFile, []byte(taiContent), 0644)

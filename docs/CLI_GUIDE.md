@@ -80,21 +80,38 @@ print("Hello from Python!")
 ```
 ```
 
-### 3. 编译运行
+### 3. 推荐的 `.tai-first` 编译运行流程
 
 ```bash
-# 预编译
+# 预编译：把 .meng 转成可审查的 .tai
 meng precompile src/main.meng
 
-# 校验 .tai
+# 校验/审查 .tai
 meng validate-tai src/main.tai
 
-# 编译
-meng build src/main.meng
+# 编译 .tai
+meng build src/main.tai
 
-# 运行
+# 运行 .tai
+meng run src/main.tai
+```
+
+### 4. 直接从 `.meng` 构建
+
+```bash
+meng build src/main.meng
 meng run src/main.meng
 ```
+
+说明：
+- 官方推荐把 `.tai` 作为可审查、可缓存、可版本控制的正式太语言源码。
+- Go CLI 负责预编译、校验、编排构建流程。
+- 真实代码生成后端应由 `compiler/` 中的 Rust 编译器实现。
+- `.tai` 正式文本语法必须使用易语言风格点号中文关键字，例如 `.元信息 / .目标平台 / .程序集 / .子程序 / .校验 / .代码 / .待定`。
+- `.tai` 正式块结构不使用 `{}`，而使用语义化结束词，例如 `.如果结束 / .判断结束 / .循环判断尾 / .代码结束`。
+- `.子程序` 体内直接书写原生执行语法，不再推荐旧式 `.实现 .开始 ... .结束`。
+- 子程序内的执行语句同样使用点号关键字，例如 `.令 / .如果 / .否则如果 / .判断开始 / .循环判断首 / .返回`。
+- 不推荐跳过 `.tai` 直接长期以 `.meng` 作为唯一构建输入，否则难以审查预编译结果。
 
 ---
 
@@ -122,67 +139,67 @@ meng init data-analysis
 
 ### meng build
 
-编译 .meng 文件为可执行文件。
+编译 `.meng` 或 `.tai` 文件为构建产物。
 
 ```bash
-meng build <file.meng> [选项]
+meng build <file> [选项]
 ```
 
 **选项**:
 - `-o, --output <name>` - 输出文件名
-- `--target <platform>` - 目标平台 (windows, macos, linux)
+- `--target <platform>` - 目标平台 (`windows`, `macos`, `linux`)
 
 **示例**:
 ```bash
-# 基本用法
+# 推荐：从 .tai 构建
+meng build src/main.tai
+
+# 也支持直接从 .meng 构建
 meng build src/main.meng
 
-# 指定输出文件名
-meng build src/main.meng -o myapp
-
 # 指定目标平台
-meng build src/main.meng --target windows
-meng build src/main.meng --target macos
+meng build src/main.tai --target windows
 ```
 
 **输出**:
 ```
-🔨 Building src/main.meng...
+🔨 Building src/main.tai...
    Output: main.exe
    Target: windows
 
-Step 1/5: Reading .meng file...
+Step 1/5: Reading source file...
   ✓ File read successfully
-Step 2/5: Precompiling natural language...
+Step 2/5: Normalizing source to .tai...
   ✓ .tai normalized
 Step 3/5: Extracting code supplements from .tai...
   ✓ Found 1 code block(s)
 Step 4/5: Generating intermediate representation...
   ✓ IR generated
 Step 5/5: Compiling to executable...
-  ✓ Compilation successful
+  ... delegated to compiler backend
 
 ✅ Build complete!
 
 📦 Output: main.exe
-📊 Size: 1.2 MB
+📊 Size: depends on backend
 
 🚀 Run with:
    ./main.exe
 
 Or use:
-   meng run src/main.meng
+   meng run src/main.tai
 ```
 
 **说明**:
-- 当前 `meng build` 的预编译与 `.tai` 校验链路已接通
-- 当前生成的可执行文件仍为占位产物，真实编译后端仍在开发中
+- 输入可以是 `.meng` 或 `.tai`，但推荐将 `.tai` 作为正式构建输入
+- Go CLI 负责把输入整理为稳定的 `.tai` 源码或兼容快照
+- 真实代码生成应由 Rust compiler 接手，CLI 当前不应内置语言后端
 
 ---
 
 ### meng precompile
 
-将 `.meng` 预编译为规范化的 `.tai` JSON。
+将 `.meng` 预编译为 `.tai`。
 
 ```bash
 meng precompile <file.meng> [选项]
@@ -214,19 +231,24 @@ meng precompile src/main.meng -o src/main.tai
 Step 1/3: Reading .meng file...
   ✓ File read successfully
 Step 2/3: Calling configured provider...
-  ✓ Provider returned normalized .tai JSON
+  ✓ Provider returned normalized .tai output
 Step 3/3: Writing .tai file...
   ✓ .tai file written
+
+✅ Precompilation complete!
+
+🚀 Next step:
+   meng build src/main.tai
 ```
 
 ---
 
 ### meng run
 
-编译并立即运行 .meng 文件。
+编译并立即运行 `.meng` 或 `.tai` 文件。
 
 ```bash
-meng run <file.meng> [选项]
+meng run <file> [选项]
 ```
 
 **选项**:
@@ -234,7 +256,10 @@ meng run <file.meng> [选项]
 
 **示例**:
 ```bash
-# 基本用法
+# 从 .tai 运行
+meng run src/main.tai
+
+# 从 .meng 运行
 meng run src/main.meng
 
 # 带参数
@@ -243,10 +268,10 @@ meng run src/main.meng --args "arg1 arg2"
 
 **输出**:
 ```
-🚀 Running src/main.meng...
+🚀 Running src/main.tai...
 
 Step 1/2: Building...
-  ✓ Build complete
+  ✓ Compilation successful
 
 Step 2/2: Executing...
 ────────────────────────────────────────
@@ -335,7 +360,8 @@ meng doc --format html -o docs/html
 ```
 
 **说明**:
-- 当前 `meng doc` 命令已存在，但文档生成仍是简化实现
+- `meng doc` 会优先读取同名 `.tai`，避免重复触发 `.meng` 预编译
+- 若目录内只有 `.meng`，则会即时预编译后再生成文档
 
 ---
 
@@ -358,7 +384,7 @@ go 1.21
 
 ### meng validate-tai
 
-校验 `.tai` 文件是否符合共享 schema。
+校验 `.tai` 文件。
 
 ```bash
 meng validate-tai <file.tai>
@@ -372,6 +398,44 @@ meng validate-tai src/main.tai
 **输出**:
 ```
 ✓ Valid .tai: src/main.tai
+```
+
+**当前行为**:
+- 若输入是旧版 JSON 快照，则按 `docs/spec/tai.schema.json` 校验。
+- 若输入是文本 `.tai` 源码，则按当前易语言风格点号关键字最小语法规则校验。
+- 文本 `.tai` 中的结构关键字必须采用 `.程序集 / .子程序 / .参数 / .局部变量 / .校验 / .代码` 这类点号中文写法。
+- 文本 `.tai` 当前主线采用 `.如果结束 / .判断结束 / .循环判断尾 / .代码结束` 这类语义化结束词。
+- 子程序主体当前支持的最小执行关键字包括 `.令 / .如果 / .否则 / .否则如果 / .判断开始 / .判断 / .默认 / .循环判断首 / .返回 / .真 / .假 / .空 / .非`。
+- Rust compiler 内部已开始实现正式文本 `.tai` parser，但 CLI 与 compiler 的校验逻辑还未完全统一。
+
+**文本 `.tai` 示例**:
+
+```tai
+.版本 3
+.目标平台 视窗
+.程序集 认证
+.说明 "认证流程"
+
+.子程序 登录, 文本型
+.参数 邮箱, 文本型
+.参数 密码, 文本型
+.局部变量 结果, 文本型
+.校验 "邮箱不能为空"
+
+.如果 邮箱 等于 ""
+    .返回 "邮箱不能为空"
+.否则如果 密码 等于 ""
+    .返回 "密码不能为空"
+.如果结束
+
+.令 结果 = 邮箱
+.返回 结果
+
+.代码 Rust
+println!("hello");
+.代码结束
+
+.待定 规则, "缺少密码复杂度规则"
 ```
 
 ---
@@ -497,16 +561,17 @@ export PATH=$PATH:$(go env GOPATH)/bin
 ```bash
 meng precompile src/main.meng
 meng validate-tai src/main.tai
-meng build src/main.meng
+meng build src/main.tai
 ```
 
 ### Q: 如何调试？
 
-**A**: 使用 `--verbose` 模式:
+**A**: 当前建议直接检查 `.tai` 和编译器输入。
 
 ```bash
-meng build src/main.meng --verbose
-meng run src/main.meng --verbose
+meng precompile src/main.meng
+meng validate-tai src/main.tai
+meng build src/main.tai
 ```
 
 ---

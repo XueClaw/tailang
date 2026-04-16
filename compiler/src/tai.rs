@@ -138,11 +138,60 @@ impl TaiTranslator {
     pub fn deserialize(&self, content: &str) -> Result<TaiFile, String> {
         TaiFile::from_json(content)
     }
+
+    pub fn translate(&self, ir: &crate::translator::IRProgram, name: &str) -> TaiFile {
+        let mut module = TaiModule {
+            name: sanitize_module_name(name),
+            description: "Generated from Tailang IR".to_string(),
+            functions: vec![],
+        };
+
+        for function in &ir.functions {
+            module.functions.push(TaiFunction {
+                name: function.name.clone(),
+                params: function.params.clone(),
+                description: format!("Function {}", function.name),
+                validations: vec![],
+            });
+        }
+
+        let mut code_blocks = Vec::new();
+        for instruction in &ir.instructions {
+            if let crate::translator::IRInstruction::CodeBlock(code) = instruction {
+                code_blocks.push(TaiCodeBlock {
+                    language: "raw".to_string(),
+                    code: code.clone(),
+                    linked_to: None,
+                });
+            }
+        }
+
+        TaiFile {
+            version: self.version.clone(),
+            source: TaiSource {
+                provider: "compiler".to_string(),
+                model: "internal".to_string(),
+                temperature: "0".to_string(),
+            },
+            modules: vec![module],
+            code_blocks,
+            unresolved_items: vec![],
+        }
+    }
 }
 
 impl Default for TaiTranslator {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn sanitize_module_name(name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        "main".to_string()
+    } else {
+        trimmed.to_string()
     }
 }
 

@@ -102,15 +102,16 @@ func runMengTestFile(testFile string) error {
 		return fmt.Errorf("read target file: %w", err)
 	}
 
-	taiJSON := string(targetContent)
-	if !looksLikeTaiJSON(taiJSON) {
-		taiJSON, err = precompileMeng(taiJSON)
+	taiSource := string(targetContent)
+	trimmedTai := strings.TrimSpace(taiSource)
+	if !looksLikeLegacyTaiJSON(trimmedTai) && !isTextualTaiSource(trimmedTai) && !strings.HasSuffix(strings.ToLower(targetFile), ".tai") {
+		taiSource, err = precompileMeng(taiSource)
 		if err != nil {
 			return fmt.Errorf("precompile target: %w", err)
 		}
 	}
 
-	actualOutputs, err := collectOutputsFromTai(taiJSON)
+	actualOutputs, err := collectOutputsFromTai(taiSource)
 	if err != nil {
 		return err
 	}
@@ -133,13 +134,6 @@ func parseExpectedOutputs(content string) []string {
 		}
 	}
 	return outputs
-}
-
-func looksLikeTaiJSON(content string) bool {
-	trimmed := strings.TrimSpace(content)
-	return strings.HasPrefix(trimmed, "{") &&
-		strings.Contains(trimmed, `"modules"`) &&
-		strings.Contains(trimmed, `"code_blocks"`)
 }
 
 func resolveTargetMengFile(testFile string) (string, error) {
@@ -169,27 +163,31 @@ func resolveTargetMengFile(testFile string) (string, error) {
 	return "", fmt.Errorf("unable to resolve target .meng file")
 }
 
-func collectOutputsFromTai(taiJSON string) (map[string]struct{}, error) {
-	var doc taiSchema
-	if err := json.Unmarshal([]byte(taiJSON), &doc); err != nil {
-		return nil, fmt.Errorf("invalid .tai JSON: %w", err)
-	}
-
+func collectOutputsFromTai(taiSource string) (map[string]struct{}, error) {
 	outputs := map[string]struct{}{}
-	for _, module := range doc.Modules {
-		collectQuotedStrings(module.Description, outputs)
-		for _, fn := range module.Functions {
-			collectQuotedStrings(fn.Description, outputs)
-			for _, validation := range fn.Validations {
-				collectQuotedStrings(validation, outputs)
+	if looksLikeLegacyTaiJSON(strings.TrimSpace(taiSource)) {
+		var doc taiSchema
+		if err := json.Unmarshal([]byte(taiSource), &doc); err != nil {
+			return nil, fmt.Errorf("invalid .tai JSON: %w", err)
+		}
+
+		for _, module := range doc.Modules {
+			collectQuotedStrings(module.Description, outputs)
+			for _, fn := range module.Functions {
+				collectQuotedStrings(fn.Description, outputs)
+				for _, validation := range fn.Validations {
+					collectQuotedStrings(validation, outputs)
+				}
 			}
 		}
+
+		for _, block := range doc.CodeBlocks {
+			collectQuotedStrings(block.Code, outputs)
+		}
+		return outputs, nil
 	}
 
-	for _, block := range doc.CodeBlocks {
-		collectQuotedStrings(block.Code, outputs)
-	}
-
+	collectQuotedStrings(taiSource, outputs)
 	return outputs, nil
 }
 
@@ -319,8 +317,13 @@ func collectTaiDocFiles(inputPath string) ([]taiDocFile, error) {
 		}
 
 		key := strings.TrimSuffix(path, filepath.Ext(path))
-		if _, exists := entries[key]; exists && strings.HasSuffix(path, ".meng") {
-			return nil
+		if strings.HasSuffix(path, ".meng") {
+			if _, err := os.Stat(key + ".tai"); err == nil {
+				return nil
+			}
+			if _, exists := entries[key]; exists {
+				return nil
+			}
 		}
 
 		doc, err := loadTaiFromPath(path)
@@ -356,11 +359,26 @@ func loadTaiFromPath(path string) (taiSchema, error) {
 	}
 
 	taiJSON := string(content)
-	if !looksLikeTaiJSON(taiJSON) {
+	trimmed := strings.TrimSpace(taiJSON)
+	if !looksLikeLegacyTaiJSON(trimmed) && !isTextualTaiSource(trimmed) && !strings.HasSuffix(strings.ToLower(path), ".tai") {
 		taiJSON, err = precompileMeng(taiJSON)
 		if err != nil {
 			return taiSchema{}, fmt.Errorf("precompile source: %w", err)
 		}
+	}
+
+	if !looksLikeLegacyTaiJSON(strings.TrimSpace(taiJSON)) {
+		return taiSchema{
+			Version: "v0.3",
+			Source: taiSource{
+				Provider:    "textual-tai",
+				Model:       "manual",
+				Temperature: "0",
+			},
+			Modules:         extractTextualTaiModules(taiJSON),
+			CodeBlocks:      extractTextualTaiCodeBlocks(taiJSON),
+			UnresolvedItems: extractTextualTaiUnresolved(taiJSON),
+		}, nil
 	}
 
 	var doc taiSchema
@@ -381,6 +399,124 @@ func loadTaiFromPath(path string) (taiSchema, error) {
 	}
 
 	return doc, nil
+}
+
+func isTextualTaiSource(content string) bool {
+	return strings.HasPrefix(content, ".版本 ") ||
+		strings.HasPrefix(content, ".程序集 ") ||
+		strings.Contains(content, "\n.程序集 ") ||
+		strings.Contains(content, "\n.子程序 ")
+}
+
+func extractTextualTaiModules(source string) []taiModule {
+	lines := strings.Split(source, "\n")
+	modules := []taiModule{}
+	var currentModule *taiModule
+	var currentFunction *taiFunction
+
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		switch {
+		case strings.HasPrefix(line, ".程序集 "):
+			name := strings.TrimSpace(strings.TrimPrefix(line, ".程序集 "))
+			modules = append(modules, taiModule{Name: name})
+			currentModule = &modules[len(modules)-1]
+			currentFunction = nil
+		case strings.HasPrefix(line, ".说明 "):
+			doc := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, ".说明 ")), `"`)
+			if currentFunction != nil {
+				currentFunction.Description = doc
+			} else if currentModule != nil {
+				currentModule.Description = doc
+			}
+		case strings.HasPrefix(line, ".子程序 "):
+			if currentModule == nil {
+				continue
+			}
+			header := strings.TrimSpace(strings.TrimPrefix(line, ".子程序 "))
+			name := strings.TrimSpace(strings.Split(header, ",")[0])
+			currentModule.Functions = append(currentModule.Functions, taiFunction{Name: name})
+			currentFunction = &currentModule.Functions[len(currentModule.Functions)-1]
+		case strings.HasPrefix(line, ".参数 "):
+			if currentFunction == nil {
+				continue
+			}
+			header := strings.TrimSpace(strings.TrimPrefix(line, ".参数 "))
+			name := strings.TrimSpace(strings.Split(strings.Split(header, "=")[0], ",")[0])
+			if name != "" {
+				currentFunction.Params = append(currentFunction.Params, name)
+			}
+		case strings.HasPrefix(line, ".校验 "):
+			if currentFunction == nil {
+				continue
+			}
+			currentFunction.Validations = append(currentFunction.Validations, strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, ".校验 ")), `"`))
+		}
+	}
+
+	return modules
+}
+
+func extractTextualTaiCodeBlocks(source string) []taiCodeBlock {
+	lines := strings.Split(source, "\n")
+	blocks := []taiCodeBlock{}
+	var language string
+	var body []string
+	inBlock := false
+
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if inBlock {
+			if line == ".代码结束" {
+				blocks = append(blocks, taiCodeBlock{
+					Language: language,
+					Code:     strings.TrimSpace(strings.Join(body, "\n")),
+				})
+				language = ""
+				body = nil
+				inBlock = false
+				continue
+			}
+			body = append(body, raw)
+			continue
+		}
+
+		if strings.HasPrefix(line, ".代码 ") {
+			language = strings.TrimSpace(strings.TrimPrefix(line, ".代码 "))
+			body = []string{}
+			inBlock = true
+		}
+	}
+
+	return blocks
+}
+
+func extractTextualTaiUnresolved(source string) []taiUnresolvedItem {
+	lines := strings.Split(source, "\n")
+	items := []taiUnresolvedItem{}
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if !strings.HasPrefix(line, ".待定 ") {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(line, ".待定 "))
+		if strings.Contains(rest, ",") {
+			parts := strings.SplitN(rest, ",", 2)
+			items = append(items, taiUnresolvedItem{
+				Kind:        strings.TrimSpace(parts[0]),
+				Description: strings.Trim(strings.TrimSpace(parts[1]), `"`),
+			})
+			continue
+		}
+		parts := strings.SplitN(rest, " ", 2)
+		if len(parts) == 2 {
+			items = append(items, taiUnresolvedItem{
+				Kind:        strings.TrimSpace(parts[0]),
+				Description: strings.Trim(strings.TrimSpace(parts[1]), `"`),
+			})
+		}
+	}
+	return items
 }
 
 func docPageName(path string) string {

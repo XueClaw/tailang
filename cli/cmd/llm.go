@@ -391,12 +391,7 @@ func normalizeTaiOutput(raw string, config llmConfig) (string, error) {
 		return "", err
 	}
 
-	normalized, err := json.MarshalIndent(doc, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("serialize normalized .tai failed: %w", err)
-	}
-
-	return string(normalized), nil
+	return renderTaiTextFromSchema(doc), nil
 }
 
 func firstNonEmpty(values ...string) string {
@@ -469,7 +464,12 @@ func validateTaiAgainstSchema(doc *taiSchema) error {
 				if err := requireStringFields(fmt.Sprintf("modules[%d]", i), map[string]string{
 					"name":        doc.Modules[i].Name,
 					"description": doc.Modules[i].Description,
-				}, schema.Defs.Module.Required); err != nil {
+				}, []string{"name", "description"}); err != nil {
+					return err
+				}
+				if err := requireArrayFields(fmt.Sprintf("modules[%d]", i), map[string]bool{
+					"functions": doc.Modules[i].Functions != nil,
+				}, []string{"functions"}); err != nil {
 					return err
 				}
 				for j := range doc.Modules[i].Functions {
@@ -482,7 +482,13 @@ func validateTaiAgainstSchema(doc *taiSchema) error {
 					if err := requireStringFields(fmt.Sprintf("modules[%d].functions[%d]", i, j), map[string]string{
 						"name":        doc.Modules[i].Functions[j].Name,
 						"description": doc.Modules[i].Functions[j].Description,
-					}, schema.Defs.Function.Required); err != nil {
+					}, []string{"name", "description"}); err != nil {
+						return err
+					}
+					if err := requireArrayFields(fmt.Sprintf("modules[%d].functions[%d]", i, j), map[string]bool{
+						"params":      doc.Modules[i].Functions[j].Params != nil,
+						"validations": doc.Modules[i].Functions[j].Validations != nil,
+					}, []string{"params", "validations"}); err != nil {
 						return err
 					}
 				}
@@ -514,6 +520,15 @@ func validateTaiAgainstSchema(doc *taiSchema) error {
 func requireStringFields(prefix string, values map[string]string, required []string) error {
 	for _, field := range required {
 		if strings.TrimSpace(values[field]) == "" {
+			return fmt.Errorf("invalid .tai schema: %s.%s is required", prefix, field)
+		}
+	}
+	return nil
+}
+
+func requireArrayFields(prefix string, values map[string]bool, required []string) error {
+	for _, field := range required {
+		if !values[field] {
 			return fmt.Errorf("invalid .tai schema: %s.%s is required", prefix, field)
 		}
 	}
@@ -563,4 +578,131 @@ func findTaiSchemaPath() (string, error) {
 	}
 
 	return "", fmt.Errorf("unable to locate docs/spec/tai.schema.json from %s", wd)
+}
+
+func renderTaiTextFromSchema(doc taiSchema) string {
+	var b strings.Builder
+	version := strings.TrimSpace(doc.Version)
+	if version == "" {
+		version = "3"
+	}
+	b.WriteString(".版本 ")
+	b.WriteString(version)
+	b.WriteString("\n")
+
+	if strings.TrimSpace(doc.Source.Provider) != "" {
+		b.WriteString(fmt.Sprintf(".元信息 提供者 = %q\n", doc.Source.Provider))
+	}
+	if strings.TrimSpace(doc.Source.Model) != "" {
+		b.WriteString(fmt.Sprintf(".元信息 模型 = %q\n", doc.Source.Model))
+	}
+	if strings.TrimSpace(doc.Source.Temperature) != "" {
+		b.WriteString(fmt.Sprintf(".元信息 温度 = %q\n", doc.Source.Temperature))
+	}
+
+	if len(doc.Modules) > 0 {
+		b.WriteString("\n")
+	}
+
+	for moduleIndex, module := range doc.Modules {
+		b.WriteString(".程序集 ")
+		b.WriteString(strings.TrimSpace(module.Name))
+		b.WriteString("\n")
+		if strings.TrimSpace(module.Description) != "" {
+			b.WriteString(fmt.Sprintf(".说明 %q\n", module.Description))
+		}
+		if len(module.Functions) > 0 {
+			b.WriteString("\n")
+		}
+
+		for fnIndex, fn := range module.Functions {
+			b.WriteString(".子程序 ")
+			b.WriteString(strings.TrimSpace(fn.Name))
+			b.WriteString("\n")
+			for _, param := range fn.Params {
+				if strings.TrimSpace(param) == "" {
+					continue
+				}
+				b.WriteString(".参数 ")
+				b.WriteString(strings.TrimSpace(param))
+				b.WriteString(", 任意型\n")
+			}
+			if strings.TrimSpace(fn.Description) != "" {
+				b.WriteString(fmt.Sprintf(".说明 %q\n", fn.Description))
+			}
+			for _, validation := range fn.Validations {
+				if strings.TrimSpace(validation) == "" {
+					continue
+				}
+				b.WriteString(fmt.Sprintf(".校验 %q\n", validation))
+			}
+			b.WriteString(".待定 实现, ")
+			b.WriteString(fmt.Sprintf("%q\n", fmt.Sprintf("子程序 %s 尚未生成原生执行语法", strings.TrimSpace(fn.Name))))
+
+			if linkedBlocks := collectLinkedCodeBlocks(doc.CodeBlocks, fn.Name); len(linkedBlocks) > 0 {
+				b.WriteString("\n")
+				for _, block := range linkedBlocks {
+					b.WriteString(".代码 ")
+					b.WriteString(strings.TrimSpace(block.Language))
+					b.WriteString("\n")
+					b.WriteString(strings.TrimSpace(block.Code))
+					b.WriteString("\n.代码结束\n")
+				}
+			}
+
+			if fnIndex != len(module.Functions)-1 {
+				b.WriteString("\n")
+			}
+		}
+
+		if len(module.Functions) == 0 {
+			b.WriteString(".待定 模块, ")
+			b.WriteString(fmt.Sprintf("%q\n", fmt.Sprintf("程序集 %s 尚未生成子程序", strings.TrimSpace(module.Name))))
+		}
+
+		if moduleIndex != len(doc.Modules)-1 {
+			b.WriteString("\n")
+		}
+	}
+
+	for _, block := range doc.CodeBlocks {
+		if block.LinkedTo != nil && strings.TrimSpace(*block.LinkedTo) != "" {
+			continue
+		}
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString(".代码 ")
+		b.WriteString(strings.TrimSpace(block.Language))
+		b.WriteString("\n")
+		b.WriteString(strings.TrimSpace(block.Code))
+		b.WriteString("\n.代码结束\n")
+	}
+
+	if len(doc.UnresolvedItems) > 0 {
+		if !strings.HasSuffix(b.String(), "\n") {
+			b.WriteString("\n")
+		}
+		for _, item := range doc.UnresolvedItems {
+			b.WriteString(".待定 ")
+			b.WriteString(strings.TrimSpace(item.Kind))
+			b.WriteString(", ")
+			b.WriteString(fmt.Sprintf("%q\n", item.Description))
+		}
+	}
+
+	return strings.TrimSpace(b.String()) + "\n"
+}
+
+func collectLinkedCodeBlocks(blocks []taiCodeBlock, functionName string) []taiCodeBlock {
+	result := make([]taiCodeBlock, 0)
+	for _, block := range blocks {
+		if block.LinkedTo == nil {
+			continue
+		}
+		if strings.TrimSpace(*block.LinkedTo) == strings.TrimSpace(functionName) {
+			result = append(result, block)
+		}
+	}
+	return result
 }

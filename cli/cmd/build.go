@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -15,18 +16,20 @@ import (
 var buildCmd = &cobra.Command{
 	Use:   "build [file.meng]",
 	Short: "Compile .meng file to executable",
-	Long: `Compile a Tailang .meng file to an executable binary.
+	Long: `Compile a Tailang .meng or .tai file to a build artifact.
 
 The compiler will:
-1. Parse the .meng file
-2. Precompile natural language to normalized .tai JSON
+1. Read the input source (.meng or .tai)
+2. Normalize it to stable .tai source
 3. Extract and validate code supplements from .tai
-4. Compile to native executable
+4. Generate intermediate representation
+5. Hand off to the compiler backend
 
 Examples:
   meng build src/main.meng
+  meng build src/main.tai
   meng build src/main.meng -o myapp
-  meng build src/main.meng --target windows`,
+  meng build src/main.tai --target windows`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		inputFile := args[0]
@@ -38,13 +41,6 @@ Examples:
 		
 		// Get output name
 		outputName, _ := cmd.Flags().GetString("output")
-		if outputName == "" {
-			// Default: use input filename without extension
-			baseName := strings.TrimSuffix(filepath.Base(inputFile), ".meng")
-			outputName = baseName
-		}
-		
-		// Get target platform
 		target, _ := cmd.Flags().GetString("target")
 		if target == "" {
 			target = runtime.GOOS
@@ -59,34 +55,27 @@ Examples:
 			fmt.Println()
 		}
 		
-		// Add extension based on platform
-		if target == "windows" {
-			if !strings.HasSuffix(outputName, ".exe") {
-				outputName = outputName + ".exe"
-			}
-		} else if target == "darwin" {
-			if !strings.HasSuffix(outputName, ".app") {
-				outputName = outputName + ".app"
-			}
+		if outputName == "" {
+			outputName = defaultOutputName(inputFile, target)
 		}
 		
 		fmt.Printf("🔨 Building %s...\n", inputFile)
 		fmt.Printf("   Output: %s\n", outputName)
 		fmt.Printf("   Target: %s\n\n", target)
 		
-		// Step 1: Read and parse .meng file
-		fmt.Println("Step 1/5: Reading .meng file...")
+		// Step 1: Read source file
+		fmt.Println("Step 1/5: Reading source file...")
 		content, err := os.ReadFile(inputFile)
 		if err != nil {
 			return fmt.Errorf("failed to read file: %w", err)
 		}
 		fmt.Println("  ✓ File read successfully")
 		
-		// Step 2: Precompile natural language
-		fmt.Println("Step 2/5: Precompiling natural language...")
-		precompiled, err := precompileMeng(string(content))
+		// Step 2: Normalize to .tai source
+		fmt.Println("Step 2/5: Normalizing source to .tai...")
+		precompiled, err := loadNormalizedTai(inputFile, string(content))
 		if err != nil {
-			return fmt.Errorf("precompilation failed: %w", err)
+			return err
 		}
 		fmt.Println("  ✓ .tai normalized")
 		
@@ -182,21 +171,97 @@ func findEnvFile(inputFile string) string {
 	return ""
 }
 
-// extractCodeBlocksFromTai extracts code blocks from normalized .tai JSON.
+func loadNormalizedTai(inputFile string, content string) (string, error) {
+	switch strings.ToLower(filepath.Ext(inputFile)) {
+	case ".tai":
+		trimmed := strings.TrimSpace(content)
+		if looksLikeLegacyTaiJSON(trimmed) {
+			var doc taiSchema
+			if err := json.Unmarshal([]byte(content), &doc); err != nil {
+				return "", fmt.Errorf("invalid .tai JSON snapshot: %w", err)
+			}
+
+			if doc.Modules == nil {
+				doc.Modules = []taiModule{}
+			}
+			if doc.CodeBlocks == nil {
+				doc.CodeBlocks = []taiCodeBlock{}
+			}
+			if doc.UnresolvedItems == nil {
+				doc.UnresolvedItems = []taiUnresolvedItem{}
+			}
+			if err := validateTaiAgainstSchema(&doc); err != nil {
+				return "", err
+			}
+
+			normalized, err := json.MarshalIndent(doc, "", "  ")
+			if err != nil {
+				return "", fmt.Errorf("serialize normalized .tai snapshot failed: %w", err)
+			}
+			return string(normalized), nil
+		}
+
+		if err := validateTextualTaiSource(trimmed); err != nil {
+			return "", err
+		}
+		return trimmed, nil
+	case ".meng":
+		precompiled, err := precompileMeng(content)
+		if err != nil {
+			return "", fmt.Errorf("precompilation failed: %w", err)
+		}
+		return precompiled, nil
+	default:
+		return "", fmt.Errorf("unsupported input file: %s (expected .meng or .tai)", inputFile)
+	}
+}
+
+// extractCodeBlocksFromTai extracts code blocks from normalized .tai.
 func extractCodeBlocksFromTai(content string) ([]CodeBlock, error) {
-	var doc taiSchema
-	if err := json.Unmarshal([]byte(content), &doc); err != nil {
-		return nil, fmt.Errorf("invalid .tai JSON: %w", err)
+	trimmed := strings.TrimSpace(content)
+	if looksLikeLegacyTaiJSON(trimmed) {
+		var doc taiSchema
+		if err := json.Unmarshal([]byte(content), &doc); err != nil {
+			return nil, fmt.Errorf("invalid .tai JSON: %w", err)
+		}
+
+		blocks := make([]CodeBlock, 0, len(doc.CodeBlocks))
+		for _, block := range doc.CodeBlocks {
+			blocks = append(blocks, CodeBlock{
+				Language: block.Language,
+				Code:     block.Code,
+			})
+		}
+		return blocks, nil
 	}
 
-	blocks := make([]CodeBlock, 0, len(doc.CodeBlocks))
-	for _, block := range doc.CodeBlocks {
-		blocks = append(blocks, CodeBlock{
-			Language: block.Language,
-			Code:     block.Code,
-		})
+	lines := strings.Split(trimmed, "\n")
+	blocks := make([]CodeBlock, 0)
+	var current *CodeBlock
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if current != nil {
+			if line == ".代码结束" {
+				blocks = append(blocks, *current)
+				current = nil
+				continue
+			}
+			if current.Code == "" {
+				current.Code = raw
+			} else {
+				current.Code += "\n" + raw
+			}
+			continue
+		}
+
+		if strings.HasPrefix(line, ".代码 ") {
+			current = &CodeBlock{Language: strings.TrimSpace(strings.TrimPrefix(line, ".代码 "))}
+		}
 	}
 
+	if current != nil {
+		return nil, fmt.Errorf("invalid textual .tai: .代码 block missing .代码结束")
+	}
 	return blocks, nil
 }
 
@@ -224,32 +289,61 @@ type IR struct {
 
 // compileToExecutable compiles IR to native executable
 func compileToExecutable(ir *IR, outputName string, target string) error {
-	// TODO: Implement actual compilation
-	// For now, create a placeholder executable
-	
-	// Create a simple script that prints a message
-	var script string
-	if target == "windows" {
-		script = fmt.Sprintf(`@echo off
-echo Tailang Executable
-echo ==================
-echo This is a placeholder for: %s
-echo Full compiler implementation coming soon!
-pause
-`, outputName)
-		os.WriteFile(outputName+".bat", []byte(script), 0755)
-		os.Rename(outputName+".bat", outputName)
-	} else {
-		script = fmt.Sprintf(`#!/bin/bash
-echo "Tailang Executable"
-echo "=================="
-echo "This is a placeholder for: %s"
-echo "Full compiler implementation coming soon!"
-`, outputName)
-		os.WriteFile(outputName, []byte(script), 0755)
+	if strings.TrimSpace(ir.Source) == "" {
+		return fmt.Errorf("empty .tai source")
 	}
-	
+	if strings.TrimSpace(os.Getenv("TAILANG_DISABLE_RUST_BACKEND")) == "1" {
+		return fmt.Errorf("Rust compiler backend disabled by TAILANG_DISABLE_RUST_BACKEND=1")
+	}
+
+	tempDir, err := os.MkdirTemp("", "tailang-build-*")
+	if err != nil {
+		return fmt.Errorf("create temp build directory failed: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	inputPath := filepath.Join(tempDir, "input.tai")
+	if err := os.WriteFile(inputPath, []byte(ir.Source), 0644); err != nil {
+		return fmt.Errorf("write temp .tai source failed: %w", err)
+	}
+
+	compilerDir, err := findCompilerDir()
+	if err != nil {
+		return err
+	}
+
+	cargoArgs := []string{"run", "--quiet", "--", "compile", "--input", inputPath, "--output", outputName}
+	cmd := exec.Command("cargo", cargoArgs...)
+	cmd.Dir = compilerDir
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("Rust compiler invocation failed: %w", err)
+	}
 	return nil
+}
+
+func findCompilerDir() (string, error) {
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("get working directory failed: %w", err)
+	}
+
+	dir := wd
+	for {
+		candidate := filepath.Join(dir, "compiler", "Cargo.toml")
+		if _, err := os.Stat(candidate); err == nil {
+			return filepath.Dir(candidate), nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+	}
+
+	return "", fmt.Errorf("failed to locate Tailang compiler/Cargo.toml")
 }
 
 // formatFileSize formats file size in human-readable format

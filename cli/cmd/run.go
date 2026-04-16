@@ -13,15 +13,16 @@ import (
 
 var runCmd = &cobra.Command{
 	Use:   "run [file.meng]",
-	Short: "Compile and run .meng file",
-	Long: `Compile a Tailang .meng file and execute it immediately.
+	Short: "Compile and run .meng or .tai file",
+	Long: `Compile a Tailang .meng or .tai file and execute it immediately.
 
 This is a convenience command that combines:
-  meng build file.meng
-  ./file.exe
+  meng build file
+  execute the generated artifact
 
 Examples:
   meng run src/main.meng
+  meng run src/main.tai
   meng run src/main.meng --args "arg1 arg2"`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -32,6 +33,10 @@ Examples:
 			return fmt.Errorf("file not found: %s", inputFile)
 		}
 		
+		if os.Getenv("TAILANG_DISABLE_RUST_BACKEND") == "1" {
+			return fmt.Errorf("Rust compiler backend disabled by TAILANG_DISABLE_RUST_BACKEND=1")
+		}
+
 		// Get additional arguments
 		runArgs, _ := cmd.Flags().GetString("args")
 		
@@ -39,10 +44,7 @@ Examples:
 		
 		// Step 1: Build
 		fmt.Println("Step 1/2: Building...")
-		outputName := strings.TrimSuffix(filepath.Base(inputFile), ".meng")
-		if runtime.GOOS == "windows" {
-			outputName = outputName + ".exe"
-		}
+		outputName := defaultOutputName(inputFile, runtime.GOOS)
 		
 		// Call build command
 		buildCmd.SetArgs([]string{inputFile, "-o", outputName})
@@ -65,7 +67,7 @@ Examples:
 		
 		// Add additional arguments
 		if runArgs != "" {
-			execCmd.Args = append(execCmd.Args, strings.Split(runArgs, " ")...)
+			execCmd.Args = append(execCmd.Args, strings.Fields(runArgs)...)
 		}
 		
 		// Set up I/O
@@ -92,4 +94,16 @@ Examples:
 func init() {
 	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().String("args", "", "Additional arguments to pass to the program")
+}
+
+func defaultOutputName(inputFile string, target string) string {
+	base := strings.TrimSuffix(filepath.Base(inputFile), filepath.Ext(inputFile))
+	switch target {
+	case "windows":
+		return base + ".exe"
+	case "darwin":
+		return base + ".app"
+	default:
+		return base
+	}
 }

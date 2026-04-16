@@ -1,18 +1,23 @@
-# Tailang `.tai` Schema
+# Tailang `.tai` JSON Snapshot Schema
 
 统一 `.tai` schema 文档见 [tai.schema.json](/C:/Users/xueyihan/.openclaw/workspace/tailang/docs/spec/tai.schema.json)。
 
-这份 schema 是当前项目内 `.tai` 中间表示的唯一结构来源，目标是约束以下几处实现保持一致：
+注意：根据 PRD v2.2，`.tai` 的产品定位已经调整为“太语言正式源码”。
+本文件描述的 **不是 `.tai` 语言本身**，而是当前仓库仍在使用的 **JSON 兼容快照格式**。
+
+新的语言方向见 [TAI_LANGUAGE_V3.md](/C:/Users/xueyihan/.openclaw/workspace/tailang/docs/spec/TAI_LANGUAGE_V3.md)。
+
+这份 schema 当前只用于约束以下兼容实现保持一致：
 
 - Go CLI 预编译输出与校验
-- Rust compiler 中的 `.tai` 反序列化与规范化
+- Rust compiler 中的旧版 `.tai` JSON 反序列化与规范化
 - Rust standalone precompiler 的 provider 输出规范化
 
 ## 设计原则
 
-1. `.tai` 是结构化中间表示，不是示例文本，也不是人手写模板。
-2. `.tai` 必须是稳定 JSON，便于缓存、版本控制和跨语言消费。
-3. `.tai` 只承载真实存在或可稳定推断的结构，不允许为了凑模板臆造逻辑。
+1. 该格式是结构化快照，不是最终 `.tai` 文本语言规范。
+2. 该格式必须是稳定 JSON，便于缓存、版本控制和跨语言消费。
+3. 该格式只承载真实存在或可稳定推断的结构，不允许为了凑模板臆造逻辑。
 
 ## 顶层字段
 
@@ -30,7 +35,7 @@
 
 ## 维护规则
 
-后续若调整 `.tai` 结构，必须同时更新：
+后续若调整这个 JSON 快照格式，必须同时更新：
 
 1. [tai.schema.json](/C:/Users/xueyihan/.openclaw/workspace/tailang/docs/spec/tai.schema.json)
 2. [compiler/src/tai.rs](/C:/Users/xueyihan/.openclaw/workspace/tailang/compiler/src/tai.rs)
