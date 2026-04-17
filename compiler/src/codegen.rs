@@ -156,10 +156,10 @@ fn build_text_section(
 }
 
 struct FrameLayout {
-    local_offsets: BTreeMap<usize, u8>,
+    local_offsets: BTreeMap<usize, u32>,
     frame_size: u32,
-    bytes_written_disp: u8,
-    print_buffer_disp: u8,
+    bytes_written_disp: u32,
+    print_buffer_disp: u32,
 }
 
 impl FrameLayout {
@@ -168,10 +168,10 @@ impl FrameLayout {
         let used_slots = if program.locals.is_empty() { 1 } else { max_slot as u32 + 1 };
         let mut local_offsets = BTreeMap::new();
         for slot in 0..used_slots {
-            local_offsets.insert(slot as usize, 0x30 + (slot * LOCAL_SLOT_SIZE) as u8);
+            local_offsets.insert(slot as usize, 0x30 + (slot * LOCAL_SLOT_SIZE));
         }
-        let bytes_written_disp = 0x20;
-        let print_buffer_disp = 0x40 + (used_slots * LOCAL_SLOT_SIZE) as u8;
+        let bytes_written_disp = 0x28;
+        let print_buffer_disp = 0x40 + (used_slots * LOCAL_SLOT_SIZE);
         let frame_size = align_up(print_buffer_disp as u32 + 32, 0x10);
         Self {
             local_offsets,
@@ -181,7 +181,7 @@ impl FrameLayout {
         }
     }
 
-    fn slot_disp(&self, slot: usize) -> u8 {
+    fn slot_disp(&self, slot: usize) -> u32 {
         self.local_offsets[&slot]
     }
 }
@@ -193,6 +193,7 @@ struct TextBuilder<'a> {
     idata: &'a ImportLayout,
     labels: BTreeMap<String, u32>,
     patches: Vec<(usize, String)>,
+    internal_label_id: usize,
 }
 
 impl<'a> TextBuilder<'a> {
@@ -204,6 +205,7 @@ impl<'a> TextBuilder<'a> {
             idata,
             labels: BTreeMap::new(),
             patches: Vec::new(),
+            internal_label_id: 0,
         }
     }
 
@@ -315,17 +317,16 @@ impl<'a> TextBuilder<'a> {
     }
 
     fn emit_print_value(&mut self, slot: usize) {
+        let string_label = self.new_internal_label("print_string");
+        let done_label = self.new_internal_label("print_done");
         emit_load_rax_local(&mut self.code, self.frame.slot_disp(slot));
-        self.code.extend_from_slice(&[0x48, 0x85, 0xC0, 0x78, 0x11]);
+        self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+        self.emit_conditional_jump(0x88, &string_label);
         self.emit_print_integer(slot);
-        self.emit_jump_internal("print_done_temp");
-
-        let string_path = self.new_internal_label("print_string");
-        self.mark_label(&string_path);
+        self.emit_jump(&done_label);
+        self.mark_label(&string_label);
         self.emit_print_string_ref(slot);
-
-        let done = self.new_internal_label("print_done");
-        self.mark_label(&done);
+        self.mark_label(&done_label);
     }
 
     fn emit_print_string_ref(&mut self, slot: usize) {
@@ -333,46 +334,74 @@ impl<'a> TextBuilder<'a> {
         self.code.extend_from_slice(&[0x48, 0xF7, 0xD8, 0x48, 0x83, 0xE8, 0x01]);
         for (id, rva) in &self.rdata.string_rvas {
             let next = self.new_internal_label("print_string_next");
-            self.code.extend_from_slice(&[0x48, 0x83, 0xF8, *id as u8, 0x75, 0x00]);
-            let patch_pos = self.code.len() - 1;
+            self.code.extend_from_slice(&[0x48, 0x3D]);
+            self.code.extend_from_slice(&(*id as u32).to_le_bytes());
+            self.emit_conditional_jump(0x85, &next);
             self.emit_write_file_call(*rva, self.rdata.string_lengths[id]);
-            self.emit_jump_internal("print_done");
-            let current = self.current_rva();
-            let branch_from = TEXT_RVA + patch_pos as u32 + 1;
-            self.code[patch_pos] = (current as i32 - branch_from as i32) as u8;
             self.mark_label(&next);
         }
     }
 
     fn emit_print_integer(&mut self, slot: usize) {
         let disp = self.frame.print_buffer_disp;
-        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp, b'0');
-        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp + 1, b'\r');
-        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp + 2, b'\n');
-        emit_mov_dword_rsp_disp8_imm32(&mut self.code, self.frame.bytes_written_disp, 3);
+        let non_negative = self.new_internal_label("int_non_negative");
+        let non_zero = self.new_internal_label("int_non_zero");
+        let digit_loop = self.new_internal_label("int_digit_loop");
+        let maybe_minus = self.new_internal_label("int_maybe_minus");
+        let write_out = self.new_internal_label("int_write");
 
+        emit_mov_byte_rsp_disp32_imm8(&mut self.code, disp + 30, b'\r');
+        emit_mov_byte_rsp_disp32_imm8(&mut self.code, disp + 31, b'\n');
+        emit_lea_r10_rsp_disp32(&mut self.code, disp + 30);
+        emit_mov_r8d_imm32(&mut self.code, 2);
+        emit_xor_r9d_r9d(&mut self.code);
         emit_load_rax_local(&mut self.code, self.frame.slot_disp(slot));
-        self.code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x00, 0x74, 0x30]);
-        emit_lea_r8_rsp_disp8(&mut self.code, disp + 22);
-        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp + 22, b'\n');
-        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp + 21, b'\r');
-        self.code.extend_from_slice(&[0x49, 0x83, 0xC0, 0x15]);
-        self.code.extend_from_slice(&[0x48, 0xC7, 0xC1, 0x0A, 0x00, 0x00, 0x00]);
-        self.code.extend_from_slice(&[0x48, 0x31, 0xD2, 0x48, 0xF7, 0xF9]);
+        self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+        self.emit_conditional_jump(0x89, &non_negative);
+        self.code.extend_from_slice(&[0x48, 0xF7, 0xD8]);
+        emit_mov_r9d_imm32(&mut self.code, 1);
+        self.mark_label(&non_negative);
+        self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+        self.emit_conditional_jump(0x85, &non_zero);
+        emit_dec_r10(&mut self.code);
+        emit_mov_byte_r10_imm8(&mut self.code, b'0');
+        emit_inc_r8d(&mut self.code);
+        self.emit_jump(&maybe_minus);
+
+        self.mark_label(&non_zero);
+        self.mark_label(&digit_loop);
+        emit_xor_edx_edx(&mut self.code);
+        emit_mov_r11_imm32(&mut self.code, 10);
+        emit_div_r11(&mut self.code);
         self.code.extend_from_slice(&[0x80, 0xC2, b'0']);
-        self.code.extend_from_slice(&[0x49, 0xFF, 0xC8, 0x41, 0x88, 0x10]);
-        self.code.extend_from_slice(&[0x48, 0x85, 0xC0, 0x75, 0xEE]);
-        self.emit_write_file_from_stack();
+        emit_dec_r10(&mut self.code);
+        emit_mov_byte_r10_dl(&mut self.code);
+        emit_inc_r8d(&mut self.code);
+        self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+        self.emit_conditional_jump(0x85, &digit_loop);
+
+        self.mark_label(&maybe_minus);
+        emit_test_r9d_r9d(&mut self.code);
+        self.emit_conditional_jump(0x84, &write_out);
+        emit_dec_r10(&mut self.code);
+        emit_mov_byte_r10_imm8(&mut self.code, b'-');
+        emit_inc_r8d(&mut self.code);
+
+        self.mark_label(&write_out);
+        self.emit_write_file_from_r10();
     }
 
-    fn emit_write_file_from_stack(&mut self) {
+    fn emit_write_file_from_r10(&mut self) {
+        emit_mov_r12_r10(&mut self.code);
+        emit_mov_r13d_r8d(&mut self.code);
         emit_mov_ecx_imm32(&mut self.code, STD_OUTPUT_HANDLE);
         emit_call_iat(&mut self.code, self.idata.iat_rva("GetStdHandle"));
         self.code.extend_from_slice(&[0x48, 0x89, 0xC1]);
-        emit_lea_rdx_rsp_disp8(&mut self.code, self.frame.print_buffer_disp);
-        emit_mov_r8d_rsp_disp8(&mut self.code, self.frame.bytes_written_disp);
-        emit_lea_r9_rsp_disp8(&mut self.code, self.frame.bytes_written_disp);
-        emit_mov_qword_rsp_disp8_imm32(&mut self.code, 0x20, 0);
+        emit_mov_rdx_r12(&mut self.code);
+        emit_mov_r8d_r13d(&mut self.code);
+        emit_lea_r9_rsp_disp32(&mut self.code, self.frame.bytes_written_disp);
+        emit_mov_qword_rsp_disp32_imm32(&mut self.code, 0x20, 0);
+        emit_mov_dword_rsp_disp32_r8d(&mut self.code, self.frame.bytes_written_disp);
         emit_call_iat(&mut self.code, self.idata.iat_rva("WriteFile"));
     }
 
@@ -382,11 +411,10 @@ impl<'a> TextBuilder<'a> {
         self.code.extend_from_slice(&[0x48, 0x89, 0xC1]);
         self.code.extend_from_slice(&[0x48, 0xBA]);
         self.code.extend_from_slice(&(IMAGE_BASE + rva as u64).to_le_bytes());
-        self.code.extend_from_slice(&[0x41, 0xB8]);
-        self.code.extend_from_slice(&len.to_le_bytes());
-        emit_lea_r9_rsp_disp8(&mut self.code, self.frame.bytes_written_disp);
-        emit_mov_qword_rsp_disp8_imm32(&mut self.code, 0x20, 0);
-        emit_mov_qword_rsp_disp8_imm32(&mut self.code, self.frame.bytes_written_disp, 0);
+        emit_mov_r8d_imm32(&mut self.code, len);
+        emit_lea_r9_rsp_disp32(&mut self.code, self.frame.bytes_written_disp);
+        emit_mov_qword_rsp_disp32_imm32(&mut self.code, 0x20, 0);
+        emit_mov_qword_rsp_disp32_imm32(&mut self.code, self.frame.bytes_written_disp, 0);
         emit_call_iat(&mut self.code, self.idata.iat_rva("WriteFile"));
     }
 
@@ -397,13 +425,17 @@ impl<'a> TextBuilder<'a> {
         self.patches.push((patch, target.to_string()));
     }
 
-    fn emit_jump_internal(&mut self, prefix: &str) {
-        let target = self.new_internal_label(prefix);
-        self.emit_jump(&target);
+    fn emit_conditional_jump(&mut self, opcode: u8, target: &str) {
+        self.code.extend_from_slice(&[0x0F, opcode]);
+        let patch = self.code.len();
+        self.code.extend_from_slice(&0i32.to_le_bytes());
+        self.patches.push((patch, target.to_string()));
     }
 
-    fn new_internal_label(&self, prefix: &str) -> String {
-        format!("__{}_{}", prefix, self.code.len())
+    fn new_internal_label(&mut self, prefix: &str) -> String {
+        let label = format!("__{}_{}", prefix, self.internal_label_id);
+        self.internal_label_id += 1;
+        label
     }
 
     fn patch_branches(&mut self) {
@@ -447,46 +479,109 @@ fn emit_mov_ecx_imm32(code: &mut Vec<u8>, value: u32) {
     code.extend_from_slice(&value.to_le_bytes());
 }
 
-fn emit_load_rax_local(code: &mut Vec<u8>, disp: u8) {
-    code.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, disp]);
+fn emit_load_rax_local(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x48, 0x8B, 0x84, 0x24]);
+    code.extend_from_slice(&disp.to_le_bytes());
 }
 
-fn emit_load_rcx_local(code: &mut Vec<u8>, disp: u8) {
-    code.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, disp]);
+fn emit_load_rcx_local(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x48, 0x8B, 0x8C, 0x24]);
+    code.extend_from_slice(&disp.to_le_bytes());
 }
 
-fn emit_store_rax_local(code: &mut Vec<u8>, disp: u8) {
-    code.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, disp]);
+fn emit_store_rax_local(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x48, 0x89, 0x84, 0x24]);
+    code.extend_from_slice(&disp.to_le_bytes());
 }
 
-fn emit_mov_qword_rsp_disp8_imm32(code: &mut Vec<u8>, disp: u8, value: u32) {
-    code.extend_from_slice(&[0x48, 0xC7, 0x44, 0x24, disp]);
+fn emit_mov_qword_rsp_disp32_imm32(code: &mut Vec<u8>, disp: u32, value: u32) {
+    code.extend_from_slice(&[0x48, 0xC7, 0x84, 0x24]);
+    code.extend_from_slice(&disp.to_le_bytes());
     code.extend_from_slice(&value.to_le_bytes());
 }
 
-fn emit_mov_dword_rsp_disp8_imm32(code: &mut Vec<u8>, disp: u8, value: u32) {
-    code.extend_from_slice(&[0xC7, 0x44, 0x24, disp]);
+fn emit_mov_dword_rsp_disp32_r8d(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x44, 0x89, 0x84, 0x24]);
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+fn emit_mov_byte_rsp_disp32_imm8(code: &mut Vec<u8>, disp: u32, value: u8) {
+    code.extend_from_slice(&[0xC6, 0x84, 0x24]);
+    code.extend_from_slice(&disp.to_le_bytes());
+    code.push(value);
+}
+
+fn emit_lea_r10_rsp_disp32(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x4C, 0x8D, 0x94, 0x24]);
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+fn emit_lea_r9_rsp_disp32(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x4C, 0x8D, 0x8C, 0x24]);
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+fn emit_mov_r8d_imm32(code: &mut Vec<u8>, value: u32) {
+    code.extend_from_slice(&[0x41, 0xB8]);
     code.extend_from_slice(&value.to_le_bytes());
 }
 
-fn emit_mov_byte_rsp_disp8_imm8(code: &mut Vec<u8>, disp: u8, value: u8) {
-    code.extend_from_slice(&[0xC6, 0x44, 0x24, disp, value]);
+fn emit_mov_r9d_imm32(code: &mut Vec<u8>, value: u32) {
+    code.extend_from_slice(&[0x41, 0xB9]);
+    code.extend_from_slice(&value.to_le_bytes());
 }
 
-fn emit_lea_rdx_rsp_disp8(code: &mut Vec<u8>, disp: u8) {
-    code.extend_from_slice(&[0x48, 0x8D, 0x54, 0x24, disp]);
+fn emit_mov_r11_imm32(code: &mut Vec<u8>, value: u32) {
+    code.extend_from_slice(&[0x49, 0xC7, 0xC3]);
+    code.extend_from_slice(&value.to_le_bytes());
 }
 
-fn emit_lea_r8_rsp_disp8(code: &mut Vec<u8>, disp: u8) {
-    code.extend_from_slice(&[0x4C, 0x8D, 0x44, 0x24, disp]);
+fn emit_xor_r9d_r9d(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x45, 0x31, 0xC9]);
 }
 
-fn emit_lea_r9_rsp_disp8(code: &mut Vec<u8>, disp: u8) {
-    code.extend_from_slice(&[0x4C, 0x8D, 0x4C, 0x24, disp]);
+fn emit_xor_edx_edx(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x31, 0xD2]);
 }
 
-fn emit_mov_r8d_rsp_disp8(code: &mut Vec<u8>, disp: u8) {
-    code.extend_from_slice(&[0x44, 0x8B, 0x44, 0x24, disp]);
+fn emit_test_r9d_r9d(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x45, 0x85, 0xC9]);
+}
+
+fn emit_dec_r10(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x49, 0xFF, 0xCA]);
+}
+
+fn emit_inc_r8d(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x41, 0xFF, 0xC0]);
+}
+
+fn emit_mov_byte_r10_imm8(code: &mut Vec<u8>, value: u8) {
+    code.extend_from_slice(&[0x41, 0xC6, 0x02, value]);
+}
+
+fn emit_mov_byte_r10_dl(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x41, 0x88, 0x12]);
+}
+
+fn emit_mov_r12_r10(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x4D, 0x89, 0xD4]);
+}
+
+fn emit_mov_rdx_r12(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x4C, 0x89, 0xE2]);
+}
+
+fn emit_mov_r13d_r8d(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x45, 0x89, 0xC5]);
+}
+
+fn emit_mov_r8d_r13d(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x45, 0x89, 0xE8]);
+}
+
+fn emit_div_r11(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x49, 0xF7, 0xF3]);
 }
 
 fn write_dos_header(image: &mut [u8]) {
@@ -710,5 +805,36 @@ mod tests {
             .build_native_image_from_program(&program)
             .expect("native build should succeed");
         assert_eq!(image.entry_label, "主程序");
+    }
+
+    #[test]
+    fn uses_disp32_stack_slots_for_large_frames() {
+        let source = r#"
+.版本 3
+.目标平台 windows
+
+.程序集 测试
+.子程序 主程序
+.令 总和 = 0
+.令 计数 = 0
+.循环判断首 计数 小于 30
+    总和 = 总和 + 1
+    计数 = 计数 + 1
+.循环判断尾
+.显示 总和
+.返回 0
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let image = CodeGenerator::new()
+            .build_native_image_from_program(&program)
+            .expect("native build should succeed");
+        assert!(
+            image.image.windows(3).any(|window| window == [0x8B, 0x84, 0x24]),
+            "generated code should use disp32 stack loads for large frames"
+        );
+        assert!(
+            image.image.windows(3).any(|window| window == [0x89, 0x84, 0x24]),
+            "generated code should use disp32 stack stores for large frames"
+        );
     }
 }
