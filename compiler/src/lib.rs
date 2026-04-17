@@ -7,6 +7,9 @@ pub mod parser;
 pub mod translator;
 pub mod emitter;
 pub mod codegen;
+pub mod hir;
+pub mod native_ir;
+pub mod runtime;
 pub mod tai;
 pub mod tai_ast;
 pub mod tai_exec;
@@ -24,6 +27,25 @@ pub use codegen::{
     compile_tai_snapshot_to_executable,
     compile_tai_source_to_executable,
 };
+pub use hir::{
+    HirBinaryOp,
+    HirExpr,
+    HirProgram,
+    HirStmt,
+    HirUnaryOp,
+    lower_tai_to_hir,
+};
+pub use native_ir::{
+    MirBinaryOp,
+    MirBlock,
+    MirInstruction,
+    MirLocal,
+    MirProgram,
+    MirString,
+    MirUnaryOp,
+    lower_hir_to_mir,
+};
+pub use runtime::RuntimeAbi;
 pub use tai::{TaiCodeBlock, TaiFile, TaiFunction, TaiModule, TaiSource, TaiTranslator, TaiUnresolvedItem};
 pub use tai_ast::{TaiCodeDecl, TaiFunctionDecl, TaiMetaField, TaiModuleDecl, TaiProgram, TaiUnresolvedDecl};
 pub use tai_exec::{

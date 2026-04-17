@@ -3,7 +3,7 @@ use std::fs;
 
 #[derive(Parser)]
 #[command(name = "tailangc")]
-#[command(about = "Tailang compiler CLI")]
+#[command(about = "Tailang native compiler CLI")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,

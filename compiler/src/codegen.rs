@@ -1,22 +1,31 @@
 //! Tailang 原生 Windows x64 后端
 //!
-//! 该模块直接生成最小 PE32+ 可执行文件，不再经过宿主源码或 `rustc`。
+//! 当前版本直接消费 MIR，提供可运行的整数/字符串/条件/循环最小执行子集。
 
+use crate::hir::lower_tai_to_hir;
+use crate::native_ir::{
+    lower_hir_to_mir, MirBinaryOp, MirBlock, MirInstruction, MirProgram, MirUnaryOp,
+};
+use crate::runtime::RuntimeAbi;
 use crate::tai::{TaiFile, TaiTranslator};
-use crate::tai_ast::{TaiFunctionDecl, TaiProgram};
-use crate::tai_exec::{parse_native_tai_exec, TaiExecExpr, TaiExecStmt};
+use crate::tai_ast::TaiProgram;
 use crate::tai_parser::TaiParser;
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 const FILE_ALIGNMENT: u32 = 0x200;
 const SECTION_ALIGNMENT: u32 = 0x1000;
 const IMAGE_BASE: u64 = 0x140000000;
 const TEXT_RVA: u32 = 0x1000;
-const IDATA_RVA: u32 = 0x2000;
+const RDATA_RVA: u32 = 0x2000;
+const IDATA_RVA: u32 = 0x3000;
 const TEXT_RAW_PTR: u32 = 0x200;
-const IDATA_RAW_PTR: u32 = 0x400;
+const RDATA_RAW_PTR: u32 = 0x800;
+const IDATA_RAW_PTR: u32 = 0xC00;
 const OPTIONAL_HEADER_SIZE: u16 = 0x00F0;
 const PE_OFFSET: u32 = 0x80;
+const STD_OUTPUT_HANDLE: u32 = 0xFFFF_FFF5;
+const LOCAL_SLOT_SIZE: u32 = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeExecutable {
@@ -33,16 +42,27 @@ impl CodeGenerator {
     }
 
     pub fn build_legacy_snapshot_image(&self, tai: &TaiFile) -> Result<NativeExecutable, String> {
-        let exit_code = infer_snapshot_exit_code(tai);
-        Ok(build_native_pe_image("tailang_main", exit_code))
+        let _ = tai;
+        let mir = MirProgram {
+            entry_label: "tailang_main".to_string(),
+            locals: vec![],
+            blocks: vec![MirBlock {
+                label: "tailang_main".to_string(),
+                instructions: vec![],
+            }],
+            strings: vec![],
+            exit_code: Some(0),
+        };
+        Ok(build_native_pe_image(&mir))
     }
 
     pub fn build_native_image_from_program(
         &self,
         program: &TaiProgram,
     ) -> Result<NativeExecutable, String> {
-        let (entry_label, exit_code) = infer_program_entry(program)?;
-        Ok(build_native_pe_image(&entry_label, exit_code))
+        let hir = lower_tai_to_hir(program)?;
+        let mir = lower_hir_to_mir(&hir)?;
+        Ok(build_native_pe_image(&mir))
     }
 }
 
@@ -75,163 +95,398 @@ fn write_native_image(generated: &NativeExecutable, output: &str) -> Result<(), 
         .map_err(|e| format!("写入原生可执行文件失败：{}", e))
 }
 
-fn infer_program_entry(program: &TaiProgram) -> Result<(String, u32), String> {
-    for module in &program.modules {
-        for function in &module.functions {
-            if is_entry_function(&function.name) {
-                let exit_code = infer_function_exit_code(function)?;
-                return Ok((function.name.clone(), exit_code));
-            }
-        }
-    }
+fn build_native_pe_image(program: &MirProgram) -> NativeExecutable {
+    let _runtime = RuntimeAbi::windows_x64();
+    let frame = FrameLayout::for_program(program);
+    let rdata = RdataLayout::for_program(program);
+    let idata = ImportLayout::standard_kernel32();
+    let text = build_text_section(program, &frame, &rdata, &idata);
+    let rdata_bytes = rdata.build_bytes();
+    let idata_bytes = idata.build_bytes();
 
-    if let Some(function) = program.modules.iter().flat_map(|m| &m.functions).next() {
-        return Ok((function.name.clone(), infer_function_exit_code(function)?));
-    }
-
-    Ok(("tailang_main".to_string(), 0))
-}
-
-fn is_entry_function(name: &str) -> bool {
-    matches!(name.trim(), "主程序" | "主函数" | "main" | "Main")
-}
-
-fn infer_function_exit_code(function: &TaiFunctionDecl) -> Result<u32, String> {
-    let Some(implementation) = &function.implementation else {
-        return Ok(0);
-    };
-
-    let statements = parse_native_tai_exec(implementation)
-        .map_err(|err| format!("原生 .tai 执行语法解析失败：{}", err.message))?;
-    Ok(infer_exit_code_from_statements(&statements).unwrap_or(0))
-}
-
-fn infer_exit_code_from_statements(statements: &[TaiExecStmt]) -> Option<u32> {
-    for stmt in statements.iter().rev() {
-        match stmt {
-            TaiExecStmt::Return(Some(expr)) => {
-                if let Some(value) = infer_exit_code_from_expr(expr) {
-                    return Some(value);
-                }
-            }
-            TaiExecStmt::If {
-                then_branch,
-                else_branch,
-                ..
-            } => {
-                let then_code = infer_exit_code_from_statements(then_branch);
-                let else_code = else_branch
-                    .as_ref()
-                    .and_then(|branch| infer_exit_code_from_statements(branch));
-                if let (Some(a), Some(b)) = (then_code, else_code) {
-                    return Some(a.max(b));
-                }
-            }
-            TaiExecStmt::Match {
-                branches,
-                default_branch,
-                ..
-            } => {
-                let mut seen = None;
-                for (_, branch) in branches {
-                    seen = seen.or_else(|| infer_exit_code_from_statements(branch));
-                }
-                if seen.is_none() {
-                    seen = default_branch
-                        .as_ref()
-                        .and_then(|branch| infer_exit_code_from_statements(branch));
-                }
-                if seen.is_some() {
-                    return seen;
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn infer_exit_code_from_expr(expr: &TaiExecExpr) -> Option<u32> {
-    match expr {
-        TaiExecExpr::Number(value) => value.parse::<u32>().ok(),
-        TaiExecExpr::Bool(value) => Some(u32::from(*value)),
-        TaiExecExpr::Null => Some(0),
-        _ => None,
-    }
-}
-
-fn infer_snapshot_exit_code(_tai: &TaiFile) -> u32 {
-    0
-}
-
-fn build_native_pe_image(entry_label: &str, exit_code: u32) -> NativeExecutable {
-    let text = build_text_section(exit_code);
-    let idata = build_idata_section();
     let text_raw_size = align_up(text.len() as u32, FILE_ALIGNMENT);
-    let idata_raw_size = align_up(idata.len() as u32, FILE_ALIGNMENT);
+    let rdata_raw_size = align_up(rdata_bytes.len() as u32, FILE_ALIGNMENT);
+    let idata_raw_size = align_up(idata_bytes.len() as u32, FILE_ALIGNMENT);
     let size_of_headers = FILE_ALIGNMENT;
     let size_of_image = align_up(IDATA_RVA + idata_raw_size, SECTION_ALIGNMENT);
 
-    let mut image = vec![0u8; (IDATA_RAW_PTR + idata_raw_size) as usize];
+    let total_size = IDATA_RAW_PTR + idata_raw_size;
+    let mut image = vec![0u8; total_size as usize];
 
     write_dos_header(&mut image);
     write_pe_headers(
         &mut image,
         text_raw_size,
+        rdata_raw_size,
         idata_raw_size,
         size_of_headers,
         size_of_image,
     );
-    write_section_headers(&mut image, text_raw_size, idata_raw_size);
+    write_section_headers(&mut image, text_raw_size, rdata_raw_size, idata_raw_size);
 
-    let text_range = TEXT_RAW_PTR as usize..(TEXT_RAW_PTR + text.len() as u32) as usize;
-    image[text_range].copy_from_slice(&text);
-    let idata_range = IDATA_RAW_PTR as usize..(IDATA_RAW_PTR + idata.len() as u32) as usize;
-    image[idata_range].copy_from_slice(&idata);
+    image[TEXT_RAW_PTR as usize..(TEXT_RAW_PTR + text.len() as u32) as usize].copy_from_slice(&text);
+    image[RDATA_RAW_PTR as usize..(RDATA_RAW_PTR + rdata_bytes.len() as u32) as usize]
+        .copy_from_slice(&rdata_bytes);
+    image[IDATA_RAW_PTR as usize..(IDATA_RAW_PTR + idata_bytes.len() as u32) as usize]
+        .copy_from_slice(&idata_bytes);
 
     NativeExecutable {
         image,
-        entry_label: entry_label.to_string(),
-        exit_code,
+        entry_label: program.entry_label.clone(),
+        exit_code: program.exit_code.unwrap_or(0) as u32,
     }
 }
 
-fn build_text_section(exit_code: u32) -> Vec<u8> {
-    let mut code = Vec::with_capacity(24);
-    code.extend_from_slice(&[0x48, 0x83, 0xEC, 0x28]);
-    code.push(0xB9);
-    code.extend_from_slice(&exit_code.to_le_bytes());
-    code.extend_from_slice(&[0xFF, 0x15]);
-    let next_rva = TEXT_RVA + code.len() as u32 + 4;
-    let disp = (IDATA_RVA + 0x38) as i32 - next_rva as i32;
-    code.extend_from_slice(&disp.to_le_bytes());
-    code.extend_from_slice(&[0x48, 0x83, 0xC4, 0x28, 0xC3]);
-    code
+fn build_text_section(
+    program: &MirProgram,
+    frame: &FrameLayout,
+    rdata: &RdataLayout,
+    idata: &ImportLayout,
+) -> Vec<u8> {
+    let mut builder = TextBuilder::new(frame, rdata, idata);
+    builder.emit_prologue();
+    for block in &program.blocks {
+        builder.mark_label(&block.label);
+        for inst in &block.instructions {
+            builder.emit_instruction(inst);
+        }
+    }
+    builder.patch_branches();
+    builder.code
 }
 
-fn build_idata_section() -> Vec<u8> {
-    let mut idata = vec![0u8; 0x80];
+struct FrameLayout {
+    local_offsets: BTreeMap<usize, u8>,
+    frame_size: u32,
+    bytes_written_disp: u8,
+    print_buffer_disp: u8,
+}
 
-    let ilt_rva = IDATA_RVA + 0x28;
-    let iat_rva = IDATA_RVA + 0x38;
-    let dll_name_rva = IDATA_RVA + 0x48;
-    let hint_name_rva = IDATA_RVA + 0x58;
+impl FrameLayout {
+    fn for_program(program: &MirProgram) -> Self {
+        let max_slot = program.locals.iter().map(|local| local.slot).max().unwrap_or(0);
+        let used_slots = if program.locals.is_empty() { 1 } else { max_slot as u32 + 1 };
+        let mut local_offsets = BTreeMap::new();
+        for slot in 0..used_slots {
+            local_offsets.insert(slot as usize, 0x30 + (slot * LOCAL_SLOT_SIZE) as u8);
+        }
+        let bytes_written_disp = 0x20;
+        let print_buffer_disp = 0x40 + (used_slots * LOCAL_SLOT_SIZE) as u8;
+        let frame_size = align_up(print_buffer_disp as u32 + 32, 0x10);
+        Self {
+            local_offsets,
+            frame_size,
+            bytes_written_disp,
+            print_buffer_disp,
+        }
+    }
 
-    put_u32(&mut idata, 0x00, ilt_rva);
-    put_u32(&mut idata, 0x0C, dll_name_rva);
-    put_u32(&mut idata, 0x10, iat_rva);
+    fn slot_disp(&self, slot: usize) -> u8 {
+        self.local_offsets[&slot]
+    }
+}
 
-    put_u64(&mut idata, 0x28, hint_name_rva as u64);
-    put_u64(&mut idata, 0x38, hint_name_rva as u64);
+struct TextBuilder<'a> {
+    code: Vec<u8>,
+    frame: &'a FrameLayout,
+    rdata: &'a RdataLayout,
+    idata: &'a ImportLayout,
+    labels: BTreeMap<String, u32>,
+    patches: Vec<(usize, String)>,
+}
 
-    let dll = b"KERNEL32.dll\0";
-    idata[0x48..0x48 + dll.len()].copy_from_slice(dll);
+impl<'a> TextBuilder<'a> {
+    fn new(frame: &'a FrameLayout, rdata: &'a RdataLayout, idata: &'a ImportLayout) -> Self {
+        Self {
+            code: Vec::new(),
+            frame,
+            rdata,
+            idata,
+            labels: BTreeMap::new(),
+            patches: Vec::new(),
+        }
+    }
 
-    put_u16(&mut idata, 0x58, 0);
-    let func = b"ExitProcess\0";
-    idata[0x5A..0x5A + func.len()].copy_from_slice(func);
+    fn current_rva(&self) -> u32 {
+        TEXT_RVA + self.code.len() as u32
+    }
 
-    idata
+    fn mark_label(&mut self, label: &str) {
+        self.labels.insert(label.to_string(), self.current_rva());
+    }
+
+    fn emit_prologue(&mut self) {
+        self.code.extend_from_slice(&[0x48, 0x81, 0xEC]);
+        self.code.extend_from_slice(&self.frame.frame_size.to_le_bytes());
+    }
+
+    fn emit_instruction(&mut self, inst: &MirInstruction) {
+        match inst {
+            MirInstruction::ConstInt { target, value } => {
+                emit_mov_rax_imm64(&mut self.code, *value as u64);
+                emit_store_rax_local(&mut self.code, self.frame.slot_disp(*target));
+            }
+            MirInstruction::ConstBool { target, value } => {
+                emit_mov_rax_imm64(&mut self.code, u64::from(*value));
+                emit_store_rax_local(&mut self.code, self.frame.slot_disp(*target));
+            }
+            MirInstruction::ConstNull { target } => {
+                emit_mov_rax_imm64(&mut self.code, 0);
+                emit_store_rax_local(&mut self.code, self.frame.slot_disp(*target));
+            }
+            MirInstruction::ConstString { target, string_id } => {
+                emit_mov_rax_imm64(&mut self.code, -((*string_id as i64) + 1) as u64);
+                emit_store_rax_local(&mut self.code, self.frame.slot_disp(*target));
+            }
+            MirInstruction::Copy { target, source } => {
+                emit_load_rax_local(&mut self.code, self.frame.slot_disp(*source));
+                emit_store_rax_local(&mut self.code, self.frame.slot_disp(*target));
+            }
+            MirInstruction::Unary { target, op, operand } => {
+                emit_load_rax_local(&mut self.code, self.frame.slot_disp(*operand));
+                match op {
+                    MirUnaryOp::Not => {
+                        self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+                        self.code.extend_from_slice(&[0x0F, 0x94, 0xC0]);
+                        self.code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC0]);
+                    }
+                    MirUnaryOp::Negate => self.code.extend_from_slice(&[0x48, 0xF7, 0xD8]),
+                    MirUnaryOp::Positive => {}
+                }
+                emit_store_rax_local(&mut self.code, self.frame.slot_disp(*target));
+            }
+            MirInstruction::Binary { target, left, op, right } => {
+                emit_load_rax_local(&mut self.code, self.frame.slot_disp(*left));
+                emit_load_rcx_local(&mut self.code, self.frame.slot_disp(*right));
+                match op {
+                    MirBinaryOp::Add => self.code.extend_from_slice(&[0x48, 0x01, 0xC8]),
+                    MirBinaryOp::Subtract => self.code.extend_from_slice(&[0x48, 0x29, 0xC8]),
+                    MirBinaryOp::Multiply => self.code.extend_from_slice(&[0x48, 0x0F, 0xAF, 0xC1]),
+                    MirBinaryOp::Divide => {
+                        self.code.extend_from_slice(&[0x48, 0x99]);
+                        self.code.extend_from_slice(&[0x48, 0xF7, 0xF9]);
+                    }
+                    MirBinaryOp::Modulo => {
+                        self.code.extend_from_slice(&[0x48, 0x99]);
+                        self.code.extend_from_slice(&[0x48, 0xF7, 0xF9]);
+                        self.code.extend_from_slice(&[0x48, 0x89, 0xD0]);
+                    }
+                    MirBinaryOp::Equal
+                    | MirBinaryOp::NotEqual
+                    | MirBinaryOp::Greater
+                    | MirBinaryOp::GreaterEqual
+                    | MirBinaryOp::Less
+                    | MirBinaryOp::LessEqual => {
+                        self.code.extend_from_slice(&[0x48, 0x39, 0xC8]);
+                        emit_setcc(&mut self.code, *op);
+                        self.code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC0]);
+                    }
+                    MirBinaryOp::And => {
+                        self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+                        self.code.extend_from_slice(&[0x0F, 0x95, 0xC2]);
+                        self.code.extend_from_slice(&[0x48, 0x85, 0xC9]);
+                        self.code.extend_from_slice(&[0x0F, 0x95, 0xC1]);
+                        self.code.extend_from_slice(&[0x20, 0xCA]);
+                        self.code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC2]);
+                    }
+                    MirBinaryOp::Or => {
+                        self.code.extend_from_slice(&[0x48, 0x09, 0xC8]);
+                        self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+                        self.code.extend_from_slice(&[0x0F, 0x95, 0xC0]);
+                        self.code.extend_from_slice(&[0x48, 0x0F, 0xB6, 0xC0]);
+                    }
+                }
+                emit_store_rax_local(&mut self.code, self.frame.slot_disp(*target));
+            }
+            MirInstruction::Print { value } => self.emit_print_value(*value),
+            MirInstruction::Jump { target } => self.emit_jump(target),
+            MirInstruction::JumpIfFalse { condition, target } => {
+                emit_load_rax_local(&mut self.code, self.frame.slot_disp(*condition));
+                self.code.extend_from_slice(&[0x48, 0x85, 0xC0, 0x0F, 0x84]);
+                let patch = self.code.len();
+                self.code.extend_from_slice(&0i32.to_le_bytes());
+                self.patches.push((patch, target.clone()));
+            }
+            MirInstruction::Return { value } => {
+                emit_load_rcx_local(&mut self.code, self.frame.slot_disp(*value));
+                emit_call_iat(&mut self.code, self.idata.iat_rva("ExitProcess"));
+            }
+        }
+    }
+
+    fn emit_print_value(&mut self, slot: usize) {
+        emit_load_rax_local(&mut self.code, self.frame.slot_disp(slot));
+        self.code.extend_from_slice(&[0x48, 0x85, 0xC0, 0x78, 0x11]);
+        self.emit_print_integer(slot);
+        self.emit_jump_internal("print_done_temp");
+
+        let string_path = self.new_internal_label("print_string");
+        self.mark_label(&string_path);
+        self.emit_print_string_ref(slot);
+
+        let done = self.new_internal_label("print_done");
+        self.mark_label(&done);
+    }
+
+    fn emit_print_string_ref(&mut self, slot: usize) {
+        emit_load_rax_local(&mut self.code, self.frame.slot_disp(slot));
+        self.code.extend_from_slice(&[0x48, 0xF7, 0xD8, 0x48, 0x83, 0xE8, 0x01]);
+        for (id, rva) in &self.rdata.string_rvas {
+            let next = self.new_internal_label("print_string_next");
+            self.code.extend_from_slice(&[0x48, 0x83, 0xF8, *id as u8, 0x75, 0x00]);
+            let patch_pos = self.code.len() - 1;
+            self.emit_write_file_call(*rva, self.rdata.string_lengths[id]);
+            self.emit_jump_internal("print_done");
+            let current = self.current_rva();
+            let branch_from = TEXT_RVA + patch_pos as u32 + 1;
+            self.code[patch_pos] = (current as i32 - branch_from as i32) as u8;
+            self.mark_label(&next);
+        }
+    }
+
+    fn emit_print_integer(&mut self, slot: usize) {
+        let disp = self.frame.print_buffer_disp;
+        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp, b'0');
+        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp + 1, b'\r');
+        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp + 2, b'\n');
+        emit_mov_dword_rsp_disp8_imm32(&mut self.code, self.frame.bytes_written_disp, 3);
+
+        emit_load_rax_local(&mut self.code, self.frame.slot_disp(slot));
+        self.code.extend_from_slice(&[0x48, 0x83, 0xF8, 0x00, 0x74, 0x30]);
+        emit_lea_r8_rsp_disp8(&mut self.code, disp + 22);
+        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp + 22, b'\n');
+        emit_mov_byte_rsp_disp8_imm8(&mut self.code, disp + 21, b'\r');
+        self.code.extend_from_slice(&[0x49, 0x83, 0xC0, 0x15]);
+        self.code.extend_from_slice(&[0x48, 0xC7, 0xC1, 0x0A, 0x00, 0x00, 0x00]);
+        self.code.extend_from_slice(&[0x48, 0x31, 0xD2, 0x48, 0xF7, 0xF9]);
+        self.code.extend_from_slice(&[0x80, 0xC2, b'0']);
+        self.code.extend_from_slice(&[0x49, 0xFF, 0xC8, 0x41, 0x88, 0x10]);
+        self.code.extend_from_slice(&[0x48, 0x85, 0xC0, 0x75, 0xEE]);
+        self.emit_write_file_from_stack();
+    }
+
+    fn emit_write_file_from_stack(&mut self) {
+        emit_mov_ecx_imm32(&mut self.code, STD_OUTPUT_HANDLE);
+        emit_call_iat(&mut self.code, self.idata.iat_rva("GetStdHandle"));
+        self.code.extend_from_slice(&[0x48, 0x89, 0xC1]);
+        emit_lea_rdx_rsp_disp8(&mut self.code, self.frame.print_buffer_disp);
+        emit_mov_r8d_rsp_disp8(&mut self.code, self.frame.bytes_written_disp);
+        emit_lea_r9_rsp_disp8(&mut self.code, self.frame.bytes_written_disp);
+        emit_mov_qword_rsp_disp8_imm32(&mut self.code, 0x20, 0);
+        emit_call_iat(&mut self.code, self.idata.iat_rva("WriteFile"));
+    }
+
+    fn emit_write_file_call(&mut self, rva: u32, len: u32) {
+        emit_mov_ecx_imm32(&mut self.code, STD_OUTPUT_HANDLE);
+        emit_call_iat(&mut self.code, self.idata.iat_rva("GetStdHandle"));
+        self.code.extend_from_slice(&[0x48, 0x89, 0xC1]);
+        self.code.extend_from_slice(&[0x48, 0xBA]);
+        self.code.extend_from_slice(&(IMAGE_BASE + rva as u64).to_le_bytes());
+        self.code.extend_from_slice(&[0x41, 0xB8]);
+        self.code.extend_from_slice(&len.to_le_bytes());
+        emit_lea_r9_rsp_disp8(&mut self.code, self.frame.bytes_written_disp);
+        emit_mov_qword_rsp_disp8_imm32(&mut self.code, 0x20, 0);
+        emit_mov_qword_rsp_disp8_imm32(&mut self.code, self.frame.bytes_written_disp, 0);
+        emit_call_iat(&mut self.code, self.idata.iat_rva("WriteFile"));
+    }
+
+    fn emit_jump(&mut self, target: &str) {
+        self.code.push(0xE9);
+        let patch = self.code.len();
+        self.code.extend_from_slice(&0i32.to_le_bytes());
+        self.patches.push((patch, target.to_string()));
+    }
+
+    fn emit_jump_internal(&mut self, prefix: &str) {
+        let target = self.new_internal_label(prefix);
+        self.emit_jump(&target);
+    }
+
+    fn new_internal_label(&self, prefix: &str) -> String {
+        format!("__{}_{}", prefix, self.code.len())
+    }
+
+    fn patch_branches(&mut self) {
+        for (patch_pos, label) in &self.patches {
+            if let Some(target) = self.labels.get(label) {
+                let next_rva = TEXT_RVA + (*patch_pos as u32) + 4;
+                let disp = *target as i32 - next_rva as i32;
+                self.code[*patch_pos..*patch_pos + 4].copy_from_slice(&disp.to_le_bytes());
+            }
+        }
+    }
+}
+
+fn emit_setcc(code: &mut Vec<u8>, op: MirBinaryOp) {
+    let opcode = match op {
+        MirBinaryOp::Equal => 0x94,
+        MirBinaryOp::NotEqual => 0x95,
+        MirBinaryOp::Greater => 0x9F,
+        MirBinaryOp::GreaterEqual => 0x9D,
+        MirBinaryOp::Less => 0x9C,
+        MirBinaryOp::LessEqual => 0x9E,
+        _ => unreachable!("invalid setcc op"),
+    };
+    code.extend_from_slice(&[0x0F, opcode, 0xC0, 0x48, 0x0F, 0xB6, 0xC0]);
+}
+
+fn emit_call_iat(code: &mut Vec<u8>, target_rva: u32) {
+    code.extend_from_slice(&[0xFF, 0x15]);
+    let next_rva = TEXT_RVA + code.len() as u32 + 4;
+    let disp = target_rva as i32 - next_rva as i32;
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+fn emit_mov_rax_imm64(code: &mut Vec<u8>, value: u64) {
+    code.extend_from_slice(&[0x48, 0xB8]);
+    code.extend_from_slice(&value.to_le_bytes());
+}
+
+fn emit_mov_ecx_imm32(code: &mut Vec<u8>, value: u32) {
+    code.push(0xB9);
+    code.extend_from_slice(&value.to_le_bytes());
+}
+
+fn emit_load_rax_local(code: &mut Vec<u8>, disp: u8) {
+    code.extend_from_slice(&[0x48, 0x8B, 0x44, 0x24, disp]);
+}
+
+fn emit_load_rcx_local(code: &mut Vec<u8>, disp: u8) {
+    code.extend_from_slice(&[0x48, 0x8B, 0x4C, 0x24, disp]);
+}
+
+fn emit_store_rax_local(code: &mut Vec<u8>, disp: u8) {
+    code.extend_from_slice(&[0x48, 0x89, 0x44, 0x24, disp]);
+}
+
+fn emit_mov_qword_rsp_disp8_imm32(code: &mut Vec<u8>, disp: u8, value: u32) {
+    code.extend_from_slice(&[0x48, 0xC7, 0x44, 0x24, disp]);
+    code.extend_from_slice(&value.to_le_bytes());
+}
+
+fn emit_mov_dword_rsp_disp8_imm32(code: &mut Vec<u8>, disp: u8, value: u32) {
+    code.extend_from_slice(&[0xC7, 0x44, 0x24, disp]);
+    code.extend_from_slice(&value.to_le_bytes());
+}
+
+fn emit_mov_byte_rsp_disp8_imm8(code: &mut Vec<u8>, disp: u8, value: u8) {
+    code.extend_from_slice(&[0xC6, 0x44, 0x24, disp, value]);
+}
+
+fn emit_lea_rdx_rsp_disp8(code: &mut Vec<u8>, disp: u8) {
+    code.extend_from_slice(&[0x48, 0x8D, 0x54, 0x24, disp]);
+}
+
+fn emit_lea_r8_rsp_disp8(code: &mut Vec<u8>, disp: u8) {
+    code.extend_from_slice(&[0x4C, 0x8D, 0x44, 0x24, disp]);
+}
+
+fn emit_lea_r9_rsp_disp8(code: &mut Vec<u8>, disp: u8) {
+    code.extend_from_slice(&[0x4C, 0x8D, 0x4C, 0x24, disp]);
+}
+
+fn emit_mov_r8d_rsp_disp8(code: &mut Vec<u8>, disp: u8) {
+    code.extend_from_slice(&[0x44, 0x8B, 0x44, 0x24, disp]);
 }
 
 fn write_dos_header(image: &mut [u8]) {
@@ -243,16 +498,16 @@ fn write_dos_header(image: &mut [u8]) {
 fn write_pe_headers(
     image: &mut [u8],
     text_raw_size: u32,
+    rdata_raw_size: u32,
     idata_raw_size: u32,
     size_of_headers: u32,
     size_of_image: u32,
 ) {
     let pe = PE_OFFSET as usize;
     image[pe..pe + 4].copy_from_slice(b"PE\0\0");
-
     let coff = pe + 4;
     put_u16(image, coff, 0x8664);
-    put_u16(image, coff + 2, 2);
+    put_u16(image, coff + 2, 3);
     put_u16(image, coff + 16, OPTIONAL_HEADER_SIZE);
     put_u16(image, coff + 18, 0x0022);
 
@@ -261,7 +516,7 @@ fn write_pe_headers(
     image[opt + 2] = 1;
     image[opt + 3] = 0;
     put_u32(image, opt + 4, text_raw_size);
-    put_u32(image, opt + 8, idata_raw_size);
+    put_u32(image, opt + 8, rdata_raw_size + idata_raw_size);
     put_u32(image, opt + 16, TEXT_RVA);
     put_u32(image, opt + 20, TEXT_RVA);
     put_u64(image, opt + 24, IMAGE_BASE);
@@ -272,53 +527,30 @@ fn write_pe_headers(
     put_u32(image, opt + 56, size_of_image);
     put_u32(image, opt + 60, size_of_headers);
     put_u16(image, opt + 68, 3);
-    put_u16(image, opt + 70, 0x8160);
+    put_u16(image, opt + 70, 0x0100);
     put_u64(image, opt + 72, 0x0010_0000);
     put_u64(image, opt + 80, 0x1000);
     put_u64(image, opt + 88, 0x0010_0000);
     put_u64(image, opt + 96, 0x1000);
     put_u32(image, opt + 104, 0);
     put_u32(image, opt + 108, 16);
-
     put_u32(image, opt + 112 + 8, IDATA_RVA);
-    put_u32(image, opt + 112 + 12, 0x80);
+    put_u32(image, opt + 112 + 12, idata_raw_size);
 }
 
-fn write_section_headers(image: &mut [u8], text_raw_size: u32, idata_raw_size: u32) {
-    let section = PE_OFFSET as usize + 4 + 20 + OPTIONAL_HEADER_SIZE as usize;
-
-    write_section_header(
-        image,
-        section,
-        b".text\0\0\0",
-        0x1000,
-        TEXT_RVA,
-        text_raw_size,
-        TEXT_RAW_PTR,
-        0x6000_0020,
-    );
-    write_section_header(
-        image,
-        section + 40,
-        b".idata\0\0",
-        0x1000,
-        IDATA_RVA,
-        idata_raw_size,
-        IDATA_RAW_PTR,
-        0xC000_0040,
-    );
-}
-
-fn write_section_header(
+fn write_section_headers(
     image: &mut [u8],
-    offset: usize,
-    name: &[u8; 8],
-    virtual_size: u32,
-    virtual_address: u32,
-    size_of_raw_data: u32,
-    pointer_to_raw_data: u32,
-    characteristics: u32,
+    text_raw_size: u32,
+    rdata_raw_size: u32,
+    idata_raw_size: u32,
 ) {
+    let section = PE_OFFSET as usize + 4 + 20 + OPTIONAL_HEADER_SIZE as usize;
+    write_section_header(image, section, b".text\0\0\0", align_up(text_raw_size, SECTION_ALIGNMENT), TEXT_RVA, text_raw_size, TEXT_RAW_PTR, 0x6000_0020);
+    write_section_header(image, section + 40, b".rdata\0\0", align_up(rdata_raw_size, SECTION_ALIGNMENT), RDATA_RVA, rdata_raw_size, RDATA_RAW_PTR, 0x4000_0040);
+    write_section_header(image, section + 80, b".idata\0\0", align_up(idata_raw_size, SECTION_ALIGNMENT), IDATA_RVA, idata_raw_size, IDATA_RAW_PTR, 0xC000_0040);
+}
+
+fn write_section_header(image: &mut [u8], offset: usize, name: &[u8; 8], virtual_size: u32, virtual_address: u32, size_of_raw_data: u32, pointer_to_raw_data: u32, characteristics: u32) {
     image[offset..offset + 8].copy_from_slice(name);
     put_u32(image, offset + 8, virtual_size);
     put_u32(image, offset + 12, virtual_address);
@@ -328,9 +560,7 @@ fn write_section_header(
 }
 
 fn align_up(value: u32, alignment: u32) -> u32 {
-    if value == 0 {
-        return 0;
-    }
+    if value == 0 { return 0; }
     ((value + alignment - 1) / alignment) * alignment
 }
 
@@ -346,6 +576,100 @@ fn put_u64(buf: &mut [u8], offset: usize, value: u64) {
     buf[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
 }
 
+struct RdataLayout {
+    string_rvas: BTreeMap<usize, u32>,
+    string_lengths: BTreeMap<usize, u32>,
+    bytes: Vec<u8>,
+}
+
+impl RdataLayout {
+    fn for_program(program: &MirProgram) -> Self {
+        let mut string_rvas = BTreeMap::new();
+        let mut string_lengths = BTreeMap::new();
+        let mut bytes = Vec::new();
+        if program.strings.is_empty() {
+            let fallback = b"Tailang runtime placeholder\r\n";
+            string_rvas.insert(0, RDATA_RVA);
+            string_lengths.insert(0, fallback.len() as u32);
+            bytes.extend_from_slice(fallback);
+        } else {
+            for item in &program.strings {
+                let rendered = format!("{}\r\n", item.value);
+                let offset = bytes.len() as u32;
+                bytes.extend_from_slice(rendered.as_bytes());
+                string_rvas.insert(item.id, RDATA_RVA + offset);
+                string_lengths.insert(item.id, rendered.len() as u32);
+            }
+        }
+        Self { string_rvas, string_lengths, bytes }
+    }
+
+    fn build_bytes(&self) -> Vec<u8> {
+        self.bytes.clone()
+    }
+}
+
+struct ImportLayout {
+    bytes: Vec<u8>,
+    symbol_iat: BTreeMap<String, u32>,
+}
+
+impl ImportLayout {
+    fn standard_kernel32() -> Self {
+        let symbols = vec!["GetStdHandle".to_string(), "WriteFile".to_string(), "ExitProcess".to_string()];
+        let descriptor_size = 20u32;
+        let descriptor_count = 2u32;
+        let descriptors_bytes = descriptor_size * descriptor_count;
+        let ilt_offset = descriptors_bytes;
+        let ilt_bytes = ((symbols.len() + 1) * 8) as u32;
+        let iat_offset = ilt_offset + ilt_bytes;
+        let iat_bytes = ilt_bytes;
+        let names_offset = iat_offset + iat_bytes;
+
+        let mut hint_name_offsets = Vec::new();
+        let mut name_cursor = names_offset;
+        for symbol in &symbols {
+            hint_name_offsets.push(name_cursor);
+            name_cursor += 2 + symbol.len() as u32 + 1;
+        }
+        let dll_name_offset = name_cursor;
+        let dll_name = b"KERNEL32.dll\0";
+        let total_size = dll_name_offset + dll_name.len() as u32;
+        let mut bytes = vec![0u8; total_size as usize];
+
+        put_u32(&mut bytes, 0x00, IDATA_RVA + ilt_offset);
+        put_u32(&mut bytes, 0x0C, IDATA_RVA + dll_name_offset);
+        put_u32(&mut bytes, 0x10, IDATA_RVA + iat_offset);
+
+        let mut symbol_iat = BTreeMap::new();
+        for (index, symbol) in symbols.iter().enumerate() {
+            let hint_name_rva = IDATA_RVA + hint_name_offsets[index];
+            put_u64(&mut bytes, (ilt_offset + (index as u32) * 8) as usize, hint_name_rva as u64);
+            let iat_entry_offset = iat_offset + (index as u32) * 8;
+            put_u64(&mut bytes, iat_entry_offset as usize, hint_name_rva as u64);
+            symbol_iat.insert(symbol.clone(), IDATA_RVA + iat_entry_offset);
+            put_u16(&mut bytes, hint_name_offsets[index] as usize, 0);
+            let start = hint_name_offsets[index] as usize + 2;
+            let name_bytes = symbol.as_bytes();
+            bytes[start..start + name_bytes.len()].copy_from_slice(name_bytes);
+            bytes[start + name_bytes.len()] = 0;
+        }
+
+        let dll_start = dll_name_offset as usize;
+        bytes[dll_start..dll_start + dll_name.len()].copy_from_slice(dll_name);
+
+        Self { bytes, symbol_iat }
+    }
+
+    fn build_bytes(&self) -> Vec<u8> {
+        self.bytes.clone()
+    }
+
+    fn iat_rva(&self, symbol: &str) -> u32 {
+        self.symbol_iat[symbol]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -356,42 +680,35 @@ mod tests {
 
     #[test]
     fn builds_valid_pe_image() {
-        let image = build_native_pe_image("主程序", 0);
+        let mir = MirProgram {
+            entry_label: "主程序".to_string(),
+            locals: vec![],
+            blocks: vec![MirBlock {
+                label: "主程序".to_string(),
+                instructions: vec![],
+            }],
+            strings: vec![],
+            exit_code: Some(0),
+        };
+        let image = build_native_pe_image(&mir);
         assert_eq!(&image.image[0..2], b"MZ");
         let pe_offset = read_u32(&image.image, 0x3C) as usize;
         assert_eq!(&image.image[pe_offset..pe_offset + 4], b"PE\0\0");
     }
 
     #[test]
-    fn infers_exit_code_from_main_return() {
+    fn builds_program_from_tai_source() {
         let source = r#"
 .版本 3
 .程序集 main
 .子程序 主程序
-.返回 7
+.显示 "Hello World"
+.返回 0
 "#;
-
         let program = TaiParser::from_source(source).expect("parse should succeed");
         let image = CodeGenerator::new()
             .build_native_image_from_program(&program)
             .expect("native build should succeed");
-        assert_eq!(image.exit_code, 7);
         assert_eq!(image.entry_label, "主程序");
-    }
-
-    #[test]
-    fn falls_back_to_zero_exit_code_without_impl() {
-        let source = r#"
-.版本 3
-.程序集 main
-.子程序 主程序
-.说明 "空入口"
-"#;
-
-        let program = TaiParser::from_source(source).expect("parse should succeed");
-        let image = CodeGenerator::new()
-            .build_native_image_from_program(&program)
-            .expect("native build should succeed");
-        assert_eq!(image.exit_code, 0);
     }
 }

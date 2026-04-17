@@ -1,6 +1,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaiExecStmt {
     Let { name: String, value: Option<TaiExecExpr> },
+    Print(TaiExecExpr),
     Return(Option<TaiExecExpr>),
     Break,
     Continue,
@@ -51,7 +52,7 @@ pub struct TaiExecError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Keyword { Let, If, Else, ElseIf, While, Return, Break, Continue, MatchStart, Case, Default, True, False, Null, And, Or, Not, Begin, End }
+enum Keyword { Let, Print, If, Else, ElseIf, While, Return, Break, Continue, MatchStart, Case, Default, True, False, Null, And, Or, Not, Begin, End }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TokenKind {
@@ -198,6 +199,7 @@ impl<'a> TaiExecLexer<'a> {
         let ident = self.input[start..self.index].to_string();
         let keyword = match ident.as_str() {
             "令" => Some(Keyword::Let),
+            "显示" => Some(Keyword::Print),
             "如果" | "若" => Some(Keyword::If),
             "否则如果" => Some(Keyword::ElseIf),
             "否则" => Some(Keyword::Else),
@@ -307,6 +309,7 @@ impl TaiExecParser {
 
     fn parse_statement(&mut self) -> Result<TaiExecStmt, TaiExecError> {
         if self.match_keyword(Keyword::Let) { return self.parse_let(); }
+        if self.match_keyword(Keyword::Print) { return self.parse_print(); }
         if self.match_keyword(Keyword::If) { return self.parse_if(); }
         if self.match_keyword(Keyword::MatchStart) { return self.parse_match(); }
         if self.match_keyword(Keyword::While) { return self.parse_while(); }
@@ -320,6 +323,10 @@ impl TaiExecParser {
         let name = self.consume_identifier("需要变量名")?;
         let value = if self.match_token(|kind| matches!(kind, TokenKind::Assign)) { Some(self.parse_expression()?) } else { None };
         Ok(TaiExecStmt::Let { name, value })
+    }
+
+    fn parse_print(&mut self) -> Result<TaiExecStmt, TaiExecError> {
+        Ok(TaiExecStmt::Print(self.parse_expression()?))
     }
 
     fn parse_if(&mut self) -> Result<TaiExecStmt, TaiExecError> {
@@ -655,6 +662,9 @@ fn render_statement(stmt: &TaiExecStmt, indent: usize, out: &mut String) {
                 out.push_str(&format!("{padding}let {} = ();\n", name));
             }
         }
+        TaiExecStmt::Print(value) => {
+            out.push_str(&format!("{padding}println!(\"{{}}\", {});\n", render_expr(value)));
+        }
         TaiExecStmt::Return(value) => {
             if let Some(value) = value { out.push_str(&format!("{padding}return {};\n", render_expr(value))); }
             else { out.push_str(&format!("{padding}return;\n")); }
@@ -748,6 +758,7 @@ mod tests {
     fn parses_native_exec_if_else() {
         let source = r#"
 .令 结果 = 用户名
+.显示 "开始检查"
 .如果 结果 等于 ""
     .返回 "空"
 .否则
@@ -755,15 +766,17 @@ mod tests {
 .如果结束
 "#;
         let statements = parse_native_tai_exec(source).expect("parse should succeed");
-        assert_eq!(statements.len(), 2);
+        assert_eq!(statements.len(), 3);
         assert!(matches!(statements[0], TaiExecStmt::Let { .. }));
-        assert!(matches!(statements[1], TaiExecStmt::If { .. }));
+        assert!(matches!(statements[1], TaiExecStmt::Print(..)));
+        assert!(matches!(statements[2], TaiExecStmt::If { .. }));
     }
 
     #[test]
     fn renders_native_exec_to_rust() {
         let source = r#"
 .令 结果 = 用户名
+.显示 "准备返回"
 .如果 结果 等于 ""
     .返回 "空"
 .如果结束
@@ -772,8 +785,20 @@ mod tests {
         let statements = parse_native_tai_exec(source).expect("parse should succeed");
         let rust = render_native_tai_exec_to_rust(&statements);
         assert!(rust.contains("let 结果 = 用户名;"));
+        assert!(rust.contains("println!(\"{}\", \"准备返回\");"));
         assert!(rust.contains("if 结果 == \"\" {"));
         assert!(rust.contains("return 结果;"));
+    }
+
+    #[test]
+    fn parses_print_statement() {
+        let source = r#"
+.显示 "Hello World"
+.返回 0
+"#;
+        let statements = parse_native_tai_exec(source).expect("parse should succeed");
+        assert!(matches!(statements[0], TaiExecStmt::Print(TaiExecExpr::String(_))));
+        assert!(matches!(statements[1], TaiExecStmt::Return(Some(TaiExecExpr::Number(_)))));
     }
 
     #[test]

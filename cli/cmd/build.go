@@ -296,9 +296,13 @@ func compileToExecutable(ir *IR, outputName string, target string) error {
 	if strings.TrimSpace(ir.Source) == "" {
 		return fmt.Errorf("empty .tai source")
 	}
-		tempDir, err := os.MkdirTemp("", "tailang-build-*")
-		if err != nil {
-			return fmt.Errorf("create temp build directory failed: %w", err)
+	outputPath, err := filepath.Abs(outputName)
+	if err != nil {
+		return fmt.Errorf("resolve output path failed: %w", err)
+	}
+	tempDir, err := os.MkdirTemp("", "tailang-build-*")
+	if err != nil {
+		return fmt.Errorf("create temp build directory failed: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 
@@ -312,7 +316,7 @@ func compileToExecutable(ir *IR, outputName string, target string) error {
 		return err
 	}
 
-	cargoArgs := []string{"run", "--quiet", "--", "compile", "--input", inputPath, "--output", outputName}
+	cargoArgs := []string{"run", "--quiet", "--", "compile", "--input", inputPath, "--output", outputPath}
 	cmd := exec.Command("cargo", cargoArgs...)
 	cmd.Dir = compilerDir
 	cmd.Stdout = os.Stdout

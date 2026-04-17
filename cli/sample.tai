@@ -1,15 +1,10 @@
 .版本 3
-.元信息 提供者 = "custom"
-.元信息 模型 = "manual-test"
-.元信息 温度 = "0"
+.目标平台 windows
 
-.程序集 main
-.说明 "Hello from manual tai"
+.程序集 演示
+.说明 "原生 .tai Hello World"
 
 .子程序 主程序
-.说明 "打印问候"
-.代码 Python
-print("Hello from code block")
-.代码结束
-
-.待定 实现, "后续替换为完整原生执行语法示例"
+.说明 "打印问候并退出"
+.显示 "Hello World"
+.返回 0
