@@ -1,4 +1,5 @@
-use crate::parser::{self, Program, Stmt, Expr, Span};
+use crate::lexer::Span;
+use crate::parser::{self, Program, Stmt, Expr};
 
 /// 中间表示 (Intermediate Representation)
 #[derive(Debug, Clone, PartialEq)]
@@ -317,11 +318,11 @@ impl Translator {
                     }
                 )))
             }
-            Expr::Array(items) => {
+            Expr::Array(_items) => {
                 // 数组字面量暂不展开
                 Ok(IRExpression::Identifier("__array_literal".to_string()))
             }
-            Expr::Object(fields) => {
+            Expr::Object(_fields) => {
                 // 对象字面量暂不展开
                 Ok(IRExpression::Identifier("__object_literal".to_string()))
             }
@@ -338,7 +339,8 @@ impl Default for Translator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::parser::{Parser, lexer};
+    use crate::lexer;
+    use crate::parser::Parser;
 
     fn parse_and_translate(source: &str) -> Result<IRProgram, TranslateError> {
         // 词法分析

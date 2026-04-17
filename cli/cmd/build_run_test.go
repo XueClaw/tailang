@@ -41,20 +41,16 @@ func TestDefaultOutputNameSupportsMengAndTai(t *testing.T) {
 	}
 }
 
-func TestCompileToExecutableFromTaiInputReportsUnimplemented(t *testing.T) {
-	t.Setenv("TAILANG_DISABLE_RUST_BACKEND", "1")
+func TestCompileToExecutableFromTaiInputProducesExecutable(t *testing.T) {
 	tempDir := t.TempDir()
 	inputPath := filepath.Join(tempDir, "main.tai")
 	outputPath := filepath.Join(tempDir, "main.exe")
 
 	content := `.版本 3
-.程序集 认证
+.程序集 演示
 
-.子程序 登录, 文本型
-.参数 邮箱, 文本型
-.代码 Rust
-println!("hello");
-.代码结束`
+.子程序 主程序
+.返回 0`
 
 	if err := os.WriteFile(inputPath, []byte(content), 0644); err != nil {
 		t.Fatalf("write tai input: %v", err)
@@ -80,8 +76,11 @@ println!("hello");
 		t.Fatalf("generateIR returned error: %v", err)
 	}
 
-	if err := compileToExecutable(ir, outputPath, "windows"); err == nil {
-		t.Fatal("expected compileToExecutable to report unimplemented backend")
+	if err := compileToExecutable(ir, outputPath, "windows"); err != nil {
+		t.Fatalf("compileToExecutable returned error: %v", err)
+	}
+	if _, err := os.Stat(outputPath); err != nil {
+		t.Fatalf("expected native executable output, got stat error: %v", err)
 	}
 }
 

@@ -15,6 +15,7 @@
 target/
 dist/
 build/
+out/
 
 # 缓存文件
 .meng.cache
@@ -49,3 +50,6 @@ node_modules/
 **/.dart_tool/
 **/.flutter-plugins
 **/.packages
+
+# Local helper scripts
+compiler/.codex-*.cmd

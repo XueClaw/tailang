@@ -46,10 +46,14 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("failed to read file: %w", err)
 		}
+		decoded, err := decodeUTF8Source(content)
+		if err != nil {
+			return err
+		}
 		fmt.Println("  ✓ File read successfully")
 		
 		fmt.Println("Step 2/3: Calling configured provider...")
-		taiContent, err := precompileMeng(string(content))
+		taiContent, err := precompileMeng(decoded)
 		if err != nil {
 			return fmt.Errorf("precompilation failed: %w", err)
 		}

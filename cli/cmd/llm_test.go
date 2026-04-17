@@ -181,8 +181,7 @@ func TestGenerateIRFromNormalizedTaiFlow(t *testing.T) {
 	}
 }
 
-func TestCompileToExecutableReturnsNotImplemented(t *testing.T) {
-	t.Setenv("TAILANG_DISABLE_RUST_BACKEND", "1")
+func TestCompileToExecutableProducesNativeExecutable(t *testing.T) {
 	input := `{
 	  "version": "0.1.0",
 	  "source": {
@@ -227,11 +226,11 @@ func TestCompileToExecutableReturnsNotImplemented(t *testing.T) {
 	tempDir := t.TempDir()
 	output := filepath.Join(tempDir, "tailang-test.exe")
 	err = compileToExecutable(ir, output, "windows")
-	if err == nil {
-		t.Fatal("expected compileToExecutable to fail in test environment")
+	if err != nil {
+		t.Fatalf("expected native compilation to succeed, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "TAILANG_DISABLE_RUST_BACKEND") {
-		t.Fatalf("expected backend-disabled error, got %v", err)
+	if _, err := os.Stat(output); err != nil {
+		t.Fatalf("expected native executable output, got stat error: %v", err)
 	}
 }
 

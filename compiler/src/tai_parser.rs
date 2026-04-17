@@ -25,6 +25,7 @@ struct V3LineParser<'a> {
 
 impl<'a> V3LineParser<'a> {
     fn new(source: &'a str) -> Self {
+        let source = source.strip_prefix('\u{feff}').unwrap_or(source);
         Self {
             source,
             lines: source.lines().collect(),
@@ -91,7 +92,12 @@ impl<'a> V3LineParser<'a> {
         };
 
         while let Some(line) = self.peek_meaningful_line() {
-            if line.starts_with(".程序集 ") || line.starts_with(".版本 ") || line.starts_with(".目标平台 ") || line.starts_with(".待定 ") || line.starts_with(".元信息 ") {
+            if line.starts_with(".程序集 ")
+                || line.starts_with(".版本 ")
+                || line.starts_with(".目标平台 ")
+                || line.starts_with(".待定 ")
+                || line.starts_with(".元信息 ")
+            {
                 break;
             }
 
@@ -140,7 +146,11 @@ impl<'a> V3LineParser<'a> {
         let mut current_code: Option<(String, Vec<String>)> = None;
 
         while let Some(line) = self.peek_meaningful_line() {
-            if is_function_boundary(line) {
+            if is_function_boundary(&line) {
+                break;
+            }
+
+            if line.starts_with(".待定 ") {
                 break;
             }
 
@@ -193,11 +203,6 @@ impl<'a> V3LineParser<'a> {
                 continue;
             }
 
-            if let Some(rest) = line.strip_prefix(".待定 ") {
-                implementation_lines.push(format!(".待定 {}", rest.trim()));
-                continue;
-            }
-
             implementation_lines.push(line.to_string());
         }
 
@@ -229,7 +234,11 @@ impl<'a> V3LineParser<'a> {
     }
 
     fn peek_meaningful_line(&self) -> Option<String> {
-        let mut idx = self.index;
+        self.peek_meaningful_line_from(self.index)
+    }
+
+    fn peek_meaningful_line_from(&self, start: usize) -> Option<String> {
+        let mut idx = start;
         while idx < self.lines.len() {
             let trimmed = self.lines[idx].trim();
             if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') {
@@ -333,7 +342,6 @@ fn is_function_boundary(line: &str) -> bool {
         || line.starts_with(".程序集 ")
         || line.starts_with(".版本 ")
         || line.starts_with(".目标平台 ")
-        || line.starts_with(".待定 ")
         || line.starts_with(".元信息 ")
 }
 
@@ -376,5 +384,14 @@ println!("执行登录流程");
         assert!(program.modules[0].functions[0].implementation.is_some());
         assert_eq!(program.modules[0].functions[0].code_blocks.len(), 1);
         assert_eq!(program.unresolved.len(), 1);
+    }
+
+    #[test]
+    fn parses_program_with_utf8_bom() {
+        let source = "\u{feff}.版本 3\n.元信息 提供者 = \"custom\"\n.程序集 main\n";
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        assert_eq!(program.version.as_deref(), Some("3"));
+        assert_eq!(program.meta.len(), 1);
+        assert_eq!(program.modules.len(), 1);
     }
 }

@@ -69,11 +69,15 @@ Examples:
 		if err != nil {
 			return fmt.Errorf("failed to read file: %w", err)
 		}
+		decoded, err := decodeUTF8Source(content)
+		if err != nil {
+			return err
+		}
 		fmt.Println("  ✓ File read successfully")
 		
 		// Step 2: Normalize to .tai source
 		fmt.Println("Step 2/5: Normalizing source to .tai...")
-		precompiled, err := loadNormalizedTai(inputFile, string(content))
+		precompiled, err := loadNormalizedTai(inputFile, decoded)
 		if err != nil {
 			return err
 		}
@@ -292,13 +296,9 @@ func compileToExecutable(ir *IR, outputName string, target string) error {
 	if strings.TrimSpace(ir.Source) == "" {
 		return fmt.Errorf("empty .tai source")
 	}
-	if strings.TrimSpace(os.Getenv("TAILANG_DISABLE_RUST_BACKEND")) == "1" {
-		return fmt.Errorf("Rust compiler backend disabled by TAILANG_DISABLE_RUST_BACKEND=1")
-	}
-
-	tempDir, err := os.MkdirTemp("", "tailang-build-*")
-	if err != nil {
-		return fmt.Errorf("create temp build directory failed: %w", err)
+		tempDir, err := os.MkdirTemp("", "tailang-build-*")
+		if err != nil {
+			return fmt.Errorf("create temp build directory failed: %w", err)
 	}
 	defer os.RemoveAll(tempDir)
 

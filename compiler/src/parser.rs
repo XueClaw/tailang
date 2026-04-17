@@ -879,7 +879,12 @@ mod tests {
     use super::*;
 
     fn span() -> Span {
-        Span { start: 0, end: 0 }
+        Span {
+            start: 0,
+            end: 0,
+            line: 1,
+            column: 1,
+        }
     }
 
     fn token(kind: TokenKind) -> Token {

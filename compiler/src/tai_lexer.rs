@@ -42,7 +42,6 @@ pub struct TaiLexError {
 
 pub struct TaiLexer<'a> {
     input: &'a str,
-    chars: Vec<char>,
     index: usize,
 }
 
@@ -50,7 +49,6 @@ impl<'a> TaiLexer<'a> {
     pub fn new(input: &'a str) -> Self {
         Self {
             input,
-            chars: input.chars().collect(),
             index: 0,
         }
     }
@@ -212,11 +210,13 @@ impl<'a> TaiLexer<'a> {
     }
 
     fn peek(&self) -> Option<char> {
-        self.chars.get(self.index).copied()
+        self.input[self.index..].chars().next()
     }
 
     fn bump(&mut self) {
-        self.index += 1;
+        if let Some(ch) = self.peek() {
+            self.index += ch.len_utf8();
+        }
     }
 }
 

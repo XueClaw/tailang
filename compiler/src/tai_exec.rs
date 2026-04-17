@@ -121,13 +121,12 @@ pub fn render_native_tai_expr_to_rust(source: &str) -> Result<String, TaiExecErr
 
 struct TaiExecLexer<'a> {
     input: &'a str,
-    chars: Vec<char>,
     index: usize,
 }
 
 impl<'a> TaiExecLexer<'a> {
     fn new(input: &'a str) -> Self {
-        Self { input, chars: input.chars().collect(), index: 0 }
+        Self { input, index: 0 }
     }
 
     fn lex(mut self) -> Result<Vec<Token>, TaiExecError> {
@@ -177,6 +176,7 @@ impl<'a> TaiExecLexer<'a> {
                     if self.peek() == Some('=') { self.bump(); TokenKind::LessEqual } else { TokenKind::Less }
                 }
                 '"' => TokenKind::String(self.lex_string()?),
+                _ if ch.is_ascii_digit() => self.lex_number(),
                 _ if is_exec_identifier_start(ch) => self.lex_identifier_or_number(),
                 _ => return Err(TaiExecError { message: format!("非法字符 '{}'", ch), offset }),
             };
@@ -264,8 +264,24 @@ impl<'a> TaiExecLexer<'a> {
         }
     }
 
-    fn peek(&self) -> Option<char> { self.chars.get(self.index).copied() }
-    fn bump(&mut self) { self.index += 1; }
+    fn lex_number(&mut self) -> TokenKind {
+        let start = self.index;
+        while let Some(ch) = self.peek() {
+            if ch.is_ascii_digit() {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        TokenKind::Number(self.input[start..self.index].to_string())
+    }
+
+    fn peek(&self) -> Option<char> { self.input[self.index..].chars().next() }
+    fn bump(&mut self) {
+        if let Some(ch) = self.peek() {
+            self.index += ch.len_utf8();
+        }
+    }
 }
 
 struct TaiExecParser {
@@ -349,13 +365,13 @@ impl TaiExecParser {
 
             if self.match_keyword(Keyword::Case) {
                 let value = self.parse_expression()?;
-                let branch = self.parse_statements(true, true)?;
+                let branch = self.parse_match_branch_statements()?;
                 branches.push((value, branch));
                 continue;
             }
 
             if self.match_keyword(Keyword::Default) {
-                default_branch = Some(self.parse_statements(true, false)?);
+                default_branch = Some(self.parse_match_branch_statements()?);
                 continue;
             }
 
@@ -368,6 +384,22 @@ impl TaiExecParser {
             branches,
             default_branch,
         })
+    }
+
+    fn parse_match_branch_statements(&mut self) -> Result<Vec<TaiExecStmt>, TaiExecError> {
+        let mut statements = Vec::new();
+        self.skip_newlines();
+        while !self.is_at_end() {
+            if self.check_keyword(Keyword::End)
+                || self.check_keyword(Keyword::Case)
+                || self.check_keyword(Keyword::Default)
+            {
+                break;
+            }
+            statements.push(self.parse_statement()?);
+            self.skip_newlines();
+        }
+        Ok(statements)
     }
 
     fn parse_return(&mut self) -> Result<TaiExecStmt, TaiExecError> {

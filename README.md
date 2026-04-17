@@ -165,3 +165,11 @@ MIT License
 **GitHub**: https://github.com/XueClaw/tailang  
 **文档**: https://docs.tailang.org  
 **社区**: 敬请期待
+# 编码要求
+
+Tailang 整个项目强制使用 `UTF-8` 编码。
+
+- 所有源码、文档、`.tai`、`.meng`、配置文件一律使用 `UTF-8`
+- 文本文件统一使用 `LF`
+- 禁止提交 `GBK`、`ANSI`、`UTF-16` 等其他编码
+- `.tai` 是全中文语法，编码不统一会直接破坏词法和语法解析

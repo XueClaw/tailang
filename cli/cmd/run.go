@@ -33,10 +33,6 @@ Examples:
 			return fmt.Errorf("file not found: %s", inputFile)
 		}
 		
-		if os.Getenv("TAILANG_DISABLE_RUST_BACKEND") == "1" {
-			return fmt.Errorf("Rust compiler backend disabled by TAILANG_DISABLE_RUST_BACKEND=1")
-		}
-
 		// Get additional arguments
 		runArgs, _ := cmd.Flags().GetString("args")
 		

@@ -20,17 +20,14 @@ pub use translator::Translator;
 pub use emitter::{Emitter, TargetLanguage};
 pub use codegen::{
     CodeGenerator,
-    RustCodegenOutput,
+    NativeExecutable,
     compile_tai_snapshot_to_executable,
     compile_tai_source_to_executable,
-    generate_rust_from_tai_snapshot,
-    generate_rust_from_tai_source,
 };
 pub use tai::{TaiCodeBlock, TaiFile, TaiFunction, TaiModule, TaiSource, TaiTranslator, TaiUnresolvedItem};
 pub use tai_ast::{TaiCodeDecl, TaiFunctionDecl, TaiMetaField, TaiModuleDecl, TaiProgram, TaiUnresolvedDecl};
 pub use tai_exec::{
-    parse_native_tai_exec, render_native_tai_exec_to_rust, render_native_tai_expr_to_rust,
-    TaiExecError, TaiExecExpr, TaiExecStmt,
+    parse_native_tai_exec, TaiExecError, TaiExecExpr, TaiExecStmt,
 };
 /// Legacy transitional lexer kept only for compatibility with the old
 /// block-based textual `.tai` experiment. v0.3 should use `TaiParser`
@@ -47,23 +44,12 @@ pub fn compile_meng_to_tai_snapshot(input: &str) -> Result<String, String> {
         .lex()
         .map_err(|err| err.message)?;
 
-    let mut parser = Parser::new(tokens);
+    let parser = Parser::new(tokens);
     let ast = parser.parse().map_err(|err| err.message)?;
 
     let ir = Translator::new().translate(ast).map_err(|err| err.message)?;
     let tai = TaiTranslator::new().translate(&ir, "tailang_program");
     tai.to_pretty_json()
-}
-
-/// Temporary compatibility path:
-/// compile legacy `.tai` JSON snapshot into Rust source code.
-pub fn compile_tai_snapshot_to_rust_source(tai_snapshot: &str) -> Result<String, String> {
-    generate_rust_from_tai_snapshot(tai_snapshot).map(|output| output.rust_source)
-}
-
-/// Compile formal textual `.tai` source into Rust source code.
-pub fn compile_tai_source_to_rust_source(tai_source: &str) -> Result<String, String> {
-    generate_rust_from_tai_source(tai_source).map(|output| output.rust_source)
 }
 
 #[cfg(test)]

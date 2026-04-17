@@ -28,11 +28,15 @@ current .tai v0.3 Chinese-keyword source rules.`,
 		if err != nil {
 			return fmt.Errorf("failed to read file: %w", err)
 		}
+		decoded, err := decodeUTF8Source(content)
+		if err != nil {
+			return err
+		}
 
-		trimmed := strings.TrimSpace(string(content))
+		trimmed := strings.TrimSpace(decoded)
 		if looksLikeLegacyTaiJSON(trimmed) {
 			var doc taiSchema
-			if err := json.Unmarshal(content, &doc); err != nil {
+			if err := json.Unmarshal([]byte(decoded), &doc); err != nil {
 				return fmt.Errorf("invalid .tai JSON snapshot: %w", err)
 			}
 

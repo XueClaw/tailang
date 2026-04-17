@@ -429,6 +429,12 @@ pub fn precompile_meng_file(input_path: &str, output_path: Option<&str>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn test_build_prompt() {
@@ -438,8 +444,14 @@ mod tests {
 
     #[test]
     fn test_default_config() {
+        let _guard = env_lock().lock().unwrap();
         env::set_var("DASHSCOPE_API_KEY", "test-key");
         env::remove_var("TAILANG_LLM_PROVIDER");
+        env::remove_var("TAILANG_LLM_MODEL");
+        env::remove_var("TAILANG_LLM_BASE_URL");
+        env::remove_var("TAILANG_LLM_API_KEY");
+        env::remove_var("OLLAMA_BASE_URL");
+        env::remove_var("OLLAMA_API_KEY");
         let config = PrecompilerConfig::default();
         assert_eq!(config.provider, ProviderKind::DashScope);
         assert_eq!(config.temperature, 0.0);
@@ -447,7 +459,11 @@ mod tests {
 
     #[test]
     fn test_ollama_config() {
+        let _guard = env_lock().lock().unwrap();
         env::set_var("TAILANG_LLM_PROVIDER", "ollama");
+        env::remove_var("TAILANG_LLM_MODEL");
+        env::remove_var("TAILANG_LLM_BASE_URL");
+        env::remove_var("OLLAMA_BASE_URL");
         let config = PrecompilerConfig::from_env().unwrap();
         assert_eq!(config.provider, ProviderKind::Ollama);
         assert_eq!(config.base_url, "http://localhost:11434/v1");
