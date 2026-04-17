@@ -191,6 +191,9 @@ func validateTextualTaiSource(input string) error {
 		case strings.HasPrefix(line, ".返回"):
 			continue
 
+		case strings.HasPrefix(line, ".显示 "):
+			continue
+
 		case strings.HasPrefix(line, ".令 "):
 			continue
 
