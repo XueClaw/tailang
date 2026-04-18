@@ -18,6 +18,9 @@ Current implementation only builds the requested .tai benchmark target.`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		target := "bench_numeric.tai"
+		backend, _ := cmd.Flags().GetString("backend")
+		optLevel, _ := cmd.Flags().GetString("opt-level")
+		output, _ := cmd.Flags().GetString("output")
 		if len(args) > 0 {
 			target = args[0]
 		}
@@ -28,7 +31,9 @@ Current implementation only builds the requested .tai benchmark target.`,
 			}
 		}
 
-		output := defaultOutputName(target, "windows")
+		if output == "" {
+			output = defaultOutputName(target, "windows")
+		}
 		fmt.Printf("📈 Building benchmark target %s -> %s\n", target, output)
 		irSource, err := os.ReadFile(target)
 		if err != nil {
@@ -50,10 +55,13 @@ Current implementation only builds the requested .tai benchmark target.`,
 		if err != nil {
 			return err
 		}
-		return compileToExecutable(ir, output, "windows")
+		return compileToExecutable(ir, output, "windows", backend, optLevel)
 	},
 }
 
 func init() {
 	rootCmd.AddCommand(benchCmd)
+	benchCmd.Flags().StringP("output", "o", "", "Output filename")
+	benchCmd.Flags().String("backend", "self-native", "Compiler backend (self-native, llvm)")
+	benchCmd.Flags().String("opt-level", "1", "Optimization level (0, 1, 2)")
 }

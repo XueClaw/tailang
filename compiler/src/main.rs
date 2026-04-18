@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use std::fs;
+use tailang_compiler::{CompileOptions, CompilerBackend, OptimizationLevel};
 
 #[derive(Parser)]
 #[command(name = "tailangc")]
@@ -16,6 +17,10 @@ enum Commands {
         input: String,
         #[arg(long)]
         output: String,
+        #[arg(long, default_value = "self-native")]
+        backend: String,
+        #[arg(long = "opt-level", default_value = "1")]
+        opt_level: String,
     },
 }
 
@@ -29,14 +34,31 @@ fn main() {
 fn run() -> Result<(), String> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Compile { input, output } => {
+        Commands::Compile {
+            input,
+            output,
+            backend,
+            opt_level,
+        } => {
             let raw = fs::read(&input)
                 .map_err(|err| format!("读取输入文件失败：{err}"))?;
             let content = decode_utf8_source(&raw)?;
+            let options = CompileOptions {
+                backend: backend.parse::<CompilerBackend>()?,
+                opt_level: opt_level.parse::<OptimizationLevel>()?,
+            };
             if looks_like_legacy_tai_json(&content) {
-                tailang_compiler::compile_tai_snapshot_to_executable(&content, &output)
+                tailang_compiler::compile_tai_snapshot_to_executable_with_options(
+                    &content,
+                    &output,
+                    options,
+                )
             } else {
-                tailang_compiler::compile_tai_source_to_executable(&content, &output)
+                tailang_compiler::compile_tai_source_to_executable_with_options(
+                    &content,
+                    &output,
+                    options,
+                )
             }
         }
     }

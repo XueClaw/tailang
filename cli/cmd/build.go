@@ -42,6 +42,8 @@ Examples:
 		// Get output name
 		outputName, _ := cmd.Flags().GetString("output")
 		target, _ := cmd.Flags().GetString("target")
+		backend, _ := cmd.Flags().GetString("backend")
+		optLevel, _ := cmd.Flags().GetString("opt-level")
 		if target == "" {
 			target = runtime.GOOS
 		}
@@ -101,7 +103,7 @@ Examples:
 		
 		// Step 5: Compile to executable
 		fmt.Println("Step 5/5: Compiling to executable...")
-		err = compileToExecutable(ir, outputName, target)
+		err = compileToExecutable(ir, outputName, target, backend, optLevel)
 		if err != nil {
 			return fmt.Errorf("compilation failed: %w", err)
 		}
@@ -124,6 +126,8 @@ func init() {
 	rootCmd.AddCommand(buildCmd)
 	buildCmd.Flags().StringP("output", "o", "", "Output filename")
 	buildCmd.Flags().String("target", "", "Target platform (windows, macos, linux)")
+	buildCmd.Flags().String("backend", "self-native", "Compiler backend (self-native, llvm)")
+	buildCmd.Flags().String("opt-level", "1", "Optimization level (0, 1, 2)")
 }
 
 // loadEnvFile loads environment variables from .env file
@@ -292,7 +296,7 @@ type IR struct {
 }
 
 // compileToExecutable compiles IR to native executable
-func compileToExecutable(ir *IR, outputName string, target string) error {
+func compileToExecutable(ir *IR, outputName string, target string, backend string, optLevel string) error {
 	if strings.TrimSpace(ir.Source) == "" {
 		return fmt.Errorf("empty .tai source")
 	}
@@ -316,7 +320,14 @@ func compileToExecutable(ir *IR, outputName string, target string) error {
 		return err
 	}
 
-	cargoArgs := []string{"run", "--quiet", "--", "compile", "--input", inputPath, "--output", outputPath}
+	cargoArgs := []string{
+		"run", "--quiet", "--",
+		"compile",
+		"--input", inputPath,
+		"--output", outputPath,
+		"--backend", backend,
+		"--opt-level", optLevel,
+	}
 	cmd := exec.Command("cargo", cargoArgs...)
 	cmd.Dir = compilerDir
 	cmd.Stdout = os.Stdout

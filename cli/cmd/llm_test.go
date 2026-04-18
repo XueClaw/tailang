@@ -226,7 +226,7 @@ func TestCompileToExecutableProducesNativeExecutable(t *testing.T) {
 
 	tempDir := t.TempDir()
 	output := filepath.Join(tempDir, "tailang-test.exe")
-	err = compileToExecutable(ir, output, "windows")
+	err = compileToExecutable(ir, output, "windows", "self-native", "1")
 	if err != nil {
 		t.Fatalf("expected native compilation to succeed, got %v", err)
 	}

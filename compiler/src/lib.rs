@@ -6,10 +6,13 @@ pub mod lexer;
 pub mod parser;
 pub mod translator;
 pub mod emitter;
+pub mod compile_config;
 pub mod codegen;
 pub mod hir;
+pub mod llvm_backend;
 pub mod native_ir;
 pub mod runtime;
+pub mod types;
 pub mod tai;
 pub mod tai_ast;
 pub mod tai_exec;
@@ -21,11 +24,18 @@ pub use lexer::Lexer;
 pub use parser::Parser;
 pub use translator::Translator;
 pub use emitter::{Emitter, TargetLanguage};
+pub use compile_config::{
+    CompileOptions,
+    CompilerBackend,
+    OptimizationLevel,
+};
 pub use codegen::{
     CodeGenerator,
     NativeExecutable,
     compile_tai_snapshot_to_executable,
     compile_tai_source_to_executable,
+    compile_tai_snapshot_to_executable_with_options,
+    compile_tai_source_to_executable_with_options,
 };
 pub use hir::{
     HirBinaryOp,
@@ -34,6 +44,10 @@ pub use hir::{
     HirStmt,
     HirUnaryOp,
     lower_tai_to_hir,
+};
+pub use llvm_backend::{
+    LlvmEnvironment,
+    compile_program_with_llvm,
 };
 pub use native_ir::{
     MirBinaryOp,
@@ -46,6 +60,7 @@ pub use native_ir::{
     lower_hir_to_mir,
 };
 pub use runtime::RuntimeAbi;
+pub use types::TaiType;
 pub use tai::{TaiCodeBlock, TaiFile, TaiFunction, TaiModule, TaiSource, TaiTranslator, TaiUnresolvedItem};
 pub use tai_ast::{TaiCodeDecl, TaiFunctionDecl, TaiMetaField, TaiModuleDecl, TaiProgram, TaiUnresolvedDecl};
 pub use tai_exec::{
