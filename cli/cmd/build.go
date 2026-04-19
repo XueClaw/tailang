@@ -32,94 +32,47 @@ Examples:
   meng build src/main.tai --target windows`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		inputFile := args[0]
-		
-		// Validate input file exists
-		if _, err := os.Stat(inputFile); os.IsNotExist(err) {
-			return fmt.Errorf("file not found: %s", inputFile)
+		request, err := newBuildRequestFromCommand(cmd, args[0])
+		if err != nil {
+			return err
 		}
-		
-		// Get output name
-		outputName, _ := cmd.Flags().GetString("output")
-		target, _ := cmd.Flags().GetString("target")
-		backend, _ := cmd.Flags().GetString("backend")
-		optLevel, _ := cmd.Flags().GetString("opt-level")
-		if target == "" {
-			target = runtime.GOOS
-		}
-		
+
 		// Load .env file
-		envPath := findEnvFile(inputFile)
+		envPath := findEnvFile(request.inputFile)
 		if envPath != "" {
 			loadEnvFile(envPath)
 			fmt.Printf("   📝 Loaded .env from: %s\n\n", envPath)
 		} else {
 			fmt.Println()
 		}
-		
-		if outputName == "" {
-			outputName = defaultOutputName(inputFile, target)
-		}
-		
-		fmt.Printf("🔨 Building %s...\n", inputFile)
-		fmt.Printf("   Output: %s\n", outputName)
-		fmt.Printf("   Target: %s\n\n", target)
-		
-		// Step 1: Read source file
-		fmt.Println("Step 1/5: Reading source file...")
-		content, err := os.ReadFile(inputFile)
-		if err != nil {
-			return fmt.Errorf("failed to read file: %w", err)
-		}
-		decoded, err := decodeUTF8Source(content)
-		if err != nil {
+
+		fmt.Printf("🔨 Building %s...\n", request.inputFile)
+		fmt.Printf("   Output: %s\n", request.outputName)
+		fmt.Printf("   Target: %s\n\n", request.target)
+
+		if err := executeBuild(request); err != nil {
 			return err
 		}
-		fmt.Println("  ✓ File read successfully")
-		
-		// Step 2: Normalize to .tai source
-		fmt.Println("Step 2/5: Normalizing source to .tai...")
-		precompiled, err := loadNormalizedTai(inputFile, decoded)
-		if err != nil {
-			return err
-		}
-		fmt.Println("  ✓ .tai normalized")
-		
-		// Step 3: Extract code supplements
-		fmt.Println("Step 3/5: Extracting code supplements from .tai...")
-		codeBlocks, err := extractCodeBlocksFromTai(precompiled)
-		if err != nil {
-			return fmt.Errorf("failed to extract code blocks: %w", err)
-		}
-		fmt.Printf("  ✓ Found %d code block(s)\n", len(codeBlocks))
-		
-		// Step 4: Generate intermediate representation
-		fmt.Println("Step 4/5: Generating intermediate representation...")
-		ir, err := generateIR(precompiled, codeBlocks)
-		if err != nil {
-			return fmt.Errorf("IR generation failed: %w", err)
-		}
-		fmt.Println("  ✓ IR generated")
-		
-		// Step 5: Compile to executable
-		fmt.Println("Step 5/5: Compiling to executable...")
-		err = compileToExecutable(ir, outputName, target, backend, optLevel)
-		if err != nil {
-			return fmt.Errorf("compilation failed: %w", err)
-		}
-		fmt.Println("  ✓ Compilation successful")
-		
+
 		// Success message
 		fmt.Printf("\n✅ Build complete!\n\n")
-		fmt.Printf("📦 Output: %s\n", outputName)
-		fmt.Printf("📊 Size: %s\n", formatFileSize(outputName))
+		fmt.Printf("📦 Output: %s\n", request.outputName)
+		fmt.Printf("📊 Size: %s\n", formatFileSize(request.outputName))
 		fmt.Printf("\n🚀 Run with:\n")
-		fmt.Printf("   ./%s\n", outputName)
+		fmt.Printf("   ./%s\n", request.outputName)
 		fmt.Printf("\nOr use:\n")
-		fmt.Printf("   meng run %s\n", inputFile)
-		
+		fmt.Printf("   meng run %s\n", request.inputFile)
+
 		return nil
 	},
+}
+
+type buildRequest struct {
+	inputFile  string
+	outputName string
+	target     string
+	backend    string
+	optLevel   string
 }
 
 func init() {
@@ -130,6 +83,77 @@ func init() {
 	buildCmd.Flags().String("opt-level", "1", "Optimization level (0, 1, 2)")
 }
 
+func newBuildRequestFromCommand(cmd *cobra.Command, inputFile string) (buildRequest, error) {
+	if _, err := os.Stat(inputFile); os.IsNotExist(err) {
+		return buildRequest{}, fmt.Errorf("file not found: %s", inputFile)
+	}
+
+	outputName, _ := cmd.Flags().GetString("output")
+	target, _ := cmd.Flags().GetString("target")
+	backend, _ := cmd.Flags().GetString("backend")
+	optLevel, _ := cmd.Flags().GetString("opt-level")
+	if target == "" {
+		target = runtime.GOOS
+	}
+	if outputName == "" {
+		outputName = defaultOutputName(inputFile, target)
+	}
+
+	return buildRequest{
+		inputFile:  inputFile,
+		outputName: outputName,
+		target:     target,
+		backend:    backend,
+		optLevel:   optLevel,
+	}, nil
+}
+
+func executeBuild(request buildRequest) error {
+	// Step 1: Read source file
+	fmt.Println("Step 1/5: Reading source file...")
+	content, err := os.ReadFile(request.inputFile)
+	if err != nil {
+		return fmt.Errorf("failed to read file: %w", err)
+	}
+	decoded, err := decodeUTF8Source(content)
+	if err != nil {
+		return err
+	}
+	fmt.Println("  ✓ File read successfully")
+
+	// Step 2: Normalize to .tai source
+	fmt.Println("Step 2/5: Normalizing source to .tai...")
+	precompiled, err := loadNormalizedTai(request.inputFile, decoded)
+	if err != nil {
+		return err
+	}
+	fmt.Println("  ✓ .tai normalized")
+
+	// Step 3: Extract code supplements
+	fmt.Println("Step 3/5: Extracting code supplements from .tai...")
+	codeBlocks, err := extractCodeBlocksFromTai(precompiled)
+	if err != nil {
+		return fmt.Errorf("failed to extract code blocks: %w", err)
+	}
+	fmt.Printf("  ✓ Found %d code block(s)\n", len(codeBlocks))
+
+	// Step 4: Generate intermediate representation
+	fmt.Println("Step 4/5: Generating intermediate representation...")
+	ir, err := generateIR(precompiled, codeBlocks)
+	if err != nil {
+		return fmt.Errorf("IR generation failed: %w", err)
+	}
+	fmt.Println("  ✓ IR generated")
+
+	// Step 5: Compile to executable
+	fmt.Println("Step 5/5: Compiling to executable...")
+	if err := compileToExecutable(ir, request.outputName, request.target, request.backend, request.optLevel); err != nil {
+		return fmt.Errorf("compilation failed: %w", err)
+	}
+	fmt.Println("  ✓ Compilation successful")
+	return nil
+}
+
 // loadEnvFile loads environment variables from .env file
 func loadEnvFile(path string) error {
 	file, err := os.Open(path)
@@ -137,7 +161,7 @@ func loadEnvFile(path string) error {
 		return err
 	}
 	defer file.Close()
-	
+
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -145,7 +169,7 @@ func loadEnvFile(path string) error {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		
+
 		parts := strings.SplitN(line, "=", 2)
 		if len(parts) == 2 {
 			key := strings.TrimSpace(parts[0])
@@ -153,7 +177,7 @@ func loadEnvFile(path string) error {
 			os.Setenv(key, value)
 		}
 	}
-	
+
 	return scanner.Err()
 }
 
@@ -161,13 +185,13 @@ func loadEnvFile(path string) error {
 func findEnvFile(inputFile string) string {
 	// Start from input file's directory and go up
 	dir := filepath.Dir(inputFile)
-	
+
 	for {
 		envPath := filepath.Join(dir, ".env")
 		if _, err := os.Stat(envPath); err == nil {
 			return envPath
 		}
-		
+
 		parent := filepath.Dir(dir)
 		if parent == dir {
 			// Reached root
@@ -175,7 +199,7 @@ func findEnvFile(inputFile string) string {
 		}
 		dir = parent
 	}
-	
+
 	return ""
 }
 
@@ -367,7 +391,7 @@ func formatFileSize(filename string) string {
 	if err != nil {
 		return "unknown"
 	}
-	
+
 	size := info.Size()
 	if size < 1024 {
 		return fmt.Sprintf("%d B", size)

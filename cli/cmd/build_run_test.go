@@ -6,7 +6,18 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
+
+func newCommandForTest(base *cobra.Command) *cobra.Command {
+	cmd := &cobra.Command{Use: base.Use}
+	cmd.Flags().StringP("output", "o", "", "Output filename")
+	cmd.Flags().String("target", "", "Target platform (windows, macos, linux)")
+	cmd.Flags().String("backend", "self-native", "Compiler backend (self-native, llvm)")
+	cmd.Flags().String("opt-level", "1", "Optimization level (0, 1, 2)")
+	return cmd
+}
 
 type executedBinary struct {
 	stdout   string
@@ -61,6 +72,73 @@ func TestDefaultOutputNameSupportsMengAndTai(t *testing.T) {
 
 	if got := defaultOutputName(filepath.Join("src", "main.tai"), "linux"); got != "main" {
 		t.Fatalf("unexpected output name for linux target: %s", got)
+	}
+}
+
+func TestNewBuildRequestFromCommandUsesDefaults(t *testing.T) {
+	tempDir := t.TempDir()
+	inputPath := filepath.Join(tempDir, "main.tai")
+	if err := os.WriteFile(inputPath, []byte(".版本 3"), 0644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	cmd := newCommandForTest(buildCmd)
+	request, err := newBuildRequestFromCommand(cmd, inputPath)
+	if err != nil {
+		t.Fatalf("newBuildRequestFromCommand returned error: %v", err)
+	}
+
+	if request.inputFile != inputPath {
+		t.Fatalf("unexpected input file: %s", request.inputFile)
+	}
+	if request.outputName != "main.exe" {
+		t.Fatalf("unexpected default output: %s", request.outputName)
+	}
+	if request.backend != "self-native" {
+		t.Fatalf("unexpected default backend: %s", request.backend)
+	}
+	if request.optLevel != "1" {
+		t.Fatalf("unexpected default opt level: %s", request.optLevel)
+	}
+}
+
+func TestNewBuildRequestFromCommandHonorsRunFlags(t *testing.T) {
+	tempDir := t.TempDir()
+	inputPath := filepath.Join(tempDir, "main.tai")
+	if err := os.WriteFile(inputPath, []byte(".版本 3"), 0644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	cmd := newCommandForTest(runCmd)
+	if err := cmd.Flags().Set("output", "custom.exe"); err != nil {
+		t.Fatalf("set output flag: %v", err)
+	}
+	if err := cmd.Flags().Set("target", "windows"); err != nil {
+		t.Fatalf("set target flag: %v", err)
+	}
+	if err := cmd.Flags().Set("backend", "llvm"); err != nil {
+		t.Fatalf("set backend flag: %v", err)
+	}
+	if err := cmd.Flags().Set("opt-level", "2"); err != nil {
+		t.Fatalf("set opt-level flag: %v", err)
+	}
+
+	request, err := newBuildRequestFromCommand(cmd, inputPath)
+	if err != nil {
+		t.Fatalf("newBuildRequestFromCommand returned error: %v", err)
+	}
+
+	if request.outputName != "custom.exe" {
+		t.Fatalf("expected output flag to be preserved, got %s", request.outputName)
+	}
+	if request.target != "windows" {
+		t.Fatalf("expected target flag to be preserved, got %s", request.target)
+	}
+	if request.backend != "llvm" {
+		t.Fatalf("expected backend flag to be preserved, got %s", request.backend)
+	}
+	if request.optLevel != "2" {
+		t.Fatalf("expected opt-level flag to be preserved, got %s", request.optLevel)
 	}
 }
 

@@ -27,50 +27,46 @@ Examples:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		inputFile := args[0]
-		
-		// Validate input file exists
-		if _, err := os.Stat(inputFile); os.IsNotExist(err) {
-			return fmt.Errorf("file not found: %s", inputFile)
+
+		buildRequest, err := newBuildRequestFromCommand(cmd, inputFile)
+		if err != nil {
+			return err
 		}
-		
+
 		// Get additional arguments
 		runArgs, _ := cmd.Flags().GetString("args")
-		
+
 		fmt.Printf("🚀 Running %s...\n\n", inputFile)
-		
+
 		// Step 1: Build
 		fmt.Println("Step 1/2: Building...")
-		outputName := defaultOutputName(inputFile, runtime.GOOS)
-		
-		// Call build command
-		buildCmd.SetArgs([]string{inputFile, "-o", outputName})
-		if err := buildCmd.Execute(); err != nil {
+		if err := executeBuild(buildRequest); err != nil {
 			return fmt.Errorf("build failed: %w", err)
 		}
 		fmt.Println()
-		
+
 		// Step 2: Execute
 		fmt.Println("Step 2/2: Executing...")
 		fmt.Println(strings.Repeat("─", 40))
-		
+
 		// Prepare command
 		var execCmd *exec.Cmd
 		if runtime.GOOS == "windows" {
-			execCmd = exec.Command(outputName)
+			execCmd = exec.Command(buildRequest.outputName)
 		} else {
-			execCmd = exec.Command("./" + outputName)
+			execCmd = exec.Command("./" + buildRequest.outputName)
 		}
-		
+
 		// Add additional arguments
 		if runArgs != "" {
 			execCmd.Args = append(execCmd.Args, strings.Fields(runArgs)...)
 		}
-		
+
 		// Set up I/O
 		execCmd.Stdin = os.Stdin
 		execCmd.Stdout = os.Stdout
 		execCmd.Stderr = os.Stderr
-		
+
 		// Execute
 		if err := execCmd.Run(); err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
@@ -79,10 +75,10 @@ Examples:
 			}
 			return fmt.Errorf("execution failed: %w", err)
 		}
-		
+
 		fmt.Println(strings.Repeat("─", 40))
 		fmt.Println("\n✅ Execution complete!")
-		
+
 		return nil
 	},
 }
@@ -90,6 +86,10 @@ Examples:
 func init() {
 	rootCmd.AddCommand(runCmd)
 	runCmd.Flags().String("args", "", "Additional arguments to pass to the program")
+	runCmd.Flags().StringP("output", "o", "", "Output filename")
+	runCmd.Flags().String("target", "", "Target platform (windows, macos, linux)")
+	runCmd.Flags().String("backend", "self-native", "Compiler backend (self-native, llvm)")
+	runCmd.Flags().String("opt-level", "1", "Optimization level (0, 1, 2)")
 }
 
 func defaultOutputName(inputFile string, target string) string {
