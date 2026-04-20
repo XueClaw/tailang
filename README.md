@@ -17,6 +17,7 @@ meng precompile src/main.meng
 meng validate-tai src/main.tai
 meng build src/main.tai
 meng run src/main.tai
+meng bench cli/bench_numeric.tai --report cli/bench_numeric.bench.json
 ```
 
 说明：
@@ -48,10 +49,16 @@ meng run src/main.tai
 
 - 面向性能的 x64 后端
 - 真正使用 runtime 的输出路径
-- benchmark 基线与 Python 对比
 - 数组/对象运行时
 - 用户函数调用
 - 多平台原生产物实现
+
+当前已新增的 benchmark 能力：
+
+- `meng bench` 可构建基准目标
+- 可运行生成的原生程序并采集耗时
+- 可运行对应 Python 基线并输出对比结果
+- 可写出 JSON benchmark 报告
 
 详见：
 

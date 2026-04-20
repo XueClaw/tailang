@@ -11,6 +11,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var execCommand = exec.Command
+var runExecCommand = func(cmd *exec.Cmd) error { return cmd.Run() }
+
 var runCmd = &cobra.Command{
 	Use:   "run [file.meng]",
 	Short: "Compile and run .meng or .tai file",
@@ -40,7 +43,7 @@ Examples:
 
 		// Step 1: Build
 		fmt.Println("Step 1/2: Building...")
-		if err := executeBuild(buildRequest); err != nil {
+		if err := executeBuildFunc(buildRequest); err != nil {
 			return fmt.Errorf("build failed: %w", err)
 		}
 		fmt.Println()
@@ -52,9 +55,9 @@ Examples:
 		// Prepare command
 		var execCmd *exec.Cmd
 		if runtime.GOOS == "windows" {
-			execCmd = exec.Command(buildRequest.outputName)
+			execCmd = execCommand(buildRequest.outputName)
 		} else {
-			execCmd = exec.Command("./" + buildRequest.outputName)
+			execCmd = execCommand("./" + buildRequest.outputName)
 		}
 
 		// Add additional arguments
@@ -68,7 +71,7 @@ Examples:
 		execCmd.Stderr = os.Stderr
 
 		// Execute
-		if err := execCmd.Run(); err != nil {
+		if err := runExecCommand(execCmd); err != nil {
 			if exitErr, ok := err.(*exec.ExitError); ok {
 				fmt.Println()
 				return fmt.Errorf("program exited with code: %d", exitErr.ExitCode())

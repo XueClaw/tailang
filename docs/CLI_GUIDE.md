@@ -9,6 +9,7 @@ meng precompile src/main.meng
 meng validate-tai src/main.tai
 meng build src/main.tai
 meng run src/main.tai
+meng bench cli/bench_numeric.tai --report cli/bench_numeric.bench.json
 meng doc src/
 ```
 
@@ -54,6 +55,25 @@ Current behavior:
 
 - uses the same build pipeline as `meng build`
 - executes the produced artifact
+
+### `meng bench`
+
+Build and benchmark a `.tai` target against a Python baseline.
+
+Current behavior:
+
+- uses the same build pipeline as `meng build`
+- builds the requested benchmark target
+- runs the produced native artifact for N iterations
+- runs a matching Python baseline for N iterations
+- prints timing summaries and speedup
+- can write a JSON report via `--report`
+
+Example:
+
+```bash
+meng bench cli/bench_numeric.tai --backend llvm --opt-level 2 --iterations 5 --report cli/bench_numeric.bench.json
+```
 
 ### `meng doc`
 

@@ -84,14 +84,19 @@ func init() {
 }
 
 func newBuildRequestFromCommand(cmd *cobra.Command, inputFile string) (buildRequest, error) {
+	return newBuildRequest(inputFile, commandOutputName(cmd), commandTarget(cmd), commandBackend(cmd), commandOptLevel(cmd))
+}
+
+func newBuildRequest(
+	inputFile string,
+	outputName string,
+	target string,
+	backend string,
+	optLevel string,
+) (buildRequest, error) {
 	if _, err := os.Stat(inputFile); os.IsNotExist(err) {
 		return buildRequest{}, fmt.Errorf("file not found: %s", inputFile)
 	}
-
-	outputName, _ := cmd.Flags().GetString("output")
-	target, _ := cmd.Flags().GetString("target")
-	backend, _ := cmd.Flags().GetString("backend")
-	optLevel, _ := cmd.Flags().GetString("opt-level")
 	if target == "" {
 		target = runtime.GOOS
 	}
@@ -106,6 +111,26 @@ func newBuildRequestFromCommand(cmd *cobra.Command, inputFile string) (buildRequ
 		backend:    backend,
 		optLevel:   optLevel,
 	}, nil
+}
+
+func commandOutputName(cmd *cobra.Command) string {
+	value, _ := cmd.Flags().GetString("output")
+	return value
+}
+
+func commandTarget(cmd *cobra.Command) string {
+	value, _ := cmd.Flags().GetString("target")
+	return value
+}
+
+func commandBackend(cmd *cobra.Command) string {
+	value, _ := cmd.Flags().GetString("backend")
+	return value
+}
+
+func commandOptLevel(cmd *cobra.Command) string {
+	value, _ := cmd.Flags().GetString("opt-level")
+	return value
 }
 
 func executeBuild(request buildRequest) error {

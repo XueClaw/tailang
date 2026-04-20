@@ -1,11 +1,14 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 )
@@ -16,6 +19,19 @@ func newCommandForTest(base *cobra.Command) *cobra.Command {
 	cmd.Flags().String("target", "", "Target platform (windows, macos, linux)")
 	cmd.Flags().String("backend", "self-native", "Compiler backend (self-native, llvm)")
 	cmd.Flags().String("opt-level", "1", "Optimization level (0, 1, 2)")
+	return cmd
+}
+
+func newBenchCommandForTest() *cobra.Command {
+	cmd := &cobra.Command{Use: benchCmd.Use}
+	addBenchFlags(cmd)
+	return cmd
+}
+
+func newRunCommandForTest() *cobra.Command {
+	cmd := newCommandForTest(runCmd)
+	cmd.Flags().String("args", "", "Additional arguments to pass to the program")
+	cmd.RunE = runCmd.RunE
 	return cmd
 }
 
@@ -139,6 +155,439 @@ func TestNewBuildRequestFromCommandHonorsRunFlags(t *testing.T) {
 	}
 	if request.optLevel != "2" {
 		t.Fatalf("expected opt-level flag to be preserved, got %s", request.optLevel)
+	}
+}
+
+func TestNewBuildRequestAllowsExplicitWindowsTarget(t *testing.T) {
+	tempDir := t.TempDir()
+	inputPath := filepath.Join(tempDir, "bench_numeric.tai")
+	if err := os.WriteFile(inputPath, []byte(".版本 3"), 0644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	request, err := newBuildRequest(inputPath, "", "windows", "llvm", "2")
+	if err != nil {
+		t.Fatalf("newBuildRequest returned error: %v", err)
+	}
+
+	if request.outputName != "bench_numeric.exe" {
+		t.Fatalf("unexpected default output for windows target: %s", request.outputName)
+	}
+	if request.target != "windows" {
+		t.Fatalf("unexpected target: %s", request.target)
+	}
+	if request.backend != "llvm" {
+		t.Fatalf("unexpected backend: %s", request.backend)
+	}
+	if request.optLevel != "2" {
+		t.Fatalf("unexpected opt level: %s", request.optLevel)
+	}
+}
+
+func TestResolveBenchTargetFallsBackToCliDirectory(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	tempDir := t.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	cliDir := filepath.Join(tempDir, "cli")
+	if err := os.MkdirAll(cliDir, 0755); err != nil {
+		t.Fatalf("mkdir cli: %v", err)
+	}
+	expectedPath := filepath.Join(cliDir, defaultBenchTarget())
+	if err := os.WriteFile(expectedPath, []byte(".版本 3"), 0644); err != nil {
+		t.Fatalf("write benchmark target: %v", err)
+	}
+
+	resolved, err := resolveBenchTarget(defaultBenchTarget())
+	if err != nil {
+		t.Fatalf("resolveBenchTarget returned error: %v", err)
+	}
+	resolvedAbs, err := filepath.Abs(resolved)
+	if err != nil {
+		t.Fatalf("resolve resolved path: %v", err)
+	}
+	if resolvedAbs != expectedPath {
+		t.Fatalf("expected fallback path %s, got %s", expectedPath, resolvedAbs)
+	}
+}
+
+func TestBenchFlagsFlowIntoSharedBuildRequest(t *testing.T) {
+	tempDir := t.TempDir()
+	inputPath := filepath.Join(tempDir, "bench_numeric.tai")
+	if err := os.WriteFile(inputPath, []byte(".版本 3"), 0644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	cmd := newBenchCommandForTest()
+	if err := cmd.Flags().Set("output", "bench-custom.exe"); err != nil {
+		t.Fatalf("set output flag: %v", err)
+	}
+	if err := cmd.Flags().Set("backend", "llvm"); err != nil {
+		t.Fatalf("set backend flag: %v", err)
+	}
+	if err := cmd.Flags().Set("opt-level", "2"); err != nil {
+		t.Fatalf("set opt-level flag: %v", err)
+	}
+
+	request, err := newBuildRequest(
+		inputPath,
+		commandOutputName(cmd),
+		"windows",
+		commandBackend(cmd),
+		commandOptLevel(cmd),
+	)
+	if err != nil {
+		t.Fatalf("newBuildRequest returned error: %v", err)
+	}
+
+	if request.inputFile != inputPath {
+		t.Fatalf("unexpected input file: %s", request.inputFile)
+	}
+	if request.outputName != "bench-custom.exe" {
+		t.Fatalf("expected explicit output to be preserved, got %s", request.outputName)
+	}
+	if request.backend != "llvm" {
+		t.Fatalf("expected backend to be preserved, got %s", request.backend)
+	}
+	if request.optLevel != "2" {
+		t.Fatalf("expected opt-level to be preserved, got %s", request.optLevel)
+	}
+	if request.target != "windows" {
+		t.Fatalf("expected benchmark target platform to remain windows, got %s", request.target)
+	}
+}
+
+func TestBenchCommandRoutesThroughSharedBuildExecutor(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	tempDir := t.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	cliDir := filepath.Join(tempDir, "cli")
+	if err := os.MkdirAll(cliDir, 0755); err != nil {
+		t.Fatalf("mkdir cli: %v", err)
+	}
+	targetPath := filepath.Join(cliDir, defaultBenchTarget())
+	pythonPath := filepath.Join(cliDir, "bench_numeric.py")
+	if err := os.WriteFile(targetPath, []byte(".版本 3"), 0644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.WriteFile(pythonPath, []byte("print(1000000)\n"), 0644); err != nil {
+		t.Fatalf("write python baseline: %v", err)
+	}
+
+	original := executeBuildFunc
+	originalRun := runBenchmarkCommand
+	t.Cleanup(func() {
+		executeBuildFunc = original
+		runBenchmarkCommand = originalRun
+	})
+
+	var captured buildRequest
+	executeBuildFunc = func(request buildRequest) error {
+		captured = request
+		return nil
+	}
+	runBenchmarkCommand = func(name string, args ...string) ([]byte, time.Duration, error) {
+		return []byte("1000000\n"), 2 * time.Millisecond, nil
+	}
+
+	cmd := newBenchCommandForTest()
+	cmd.RunE = benchCmd.RunE
+	if err := cmd.Flags().Set("output", "bench-out.exe"); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+	if err := cmd.Flags().Set("backend", "llvm"); err != nil {
+		t.Fatalf("set backend: %v", err)
+	}
+	if err := cmd.Flags().Set("opt-level", "2"); err != nil {
+		t.Fatalf("set opt-level: %v", err)
+	}
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("bench command failed: %v", err)
+	}
+	if captured.inputFile != filepath.Join("cli", defaultBenchTarget()) {
+		t.Fatalf("unexpected captured input path: %s", captured.inputFile)
+	}
+	if captured.outputName != "bench-out.exe" {
+		t.Fatalf("unexpected captured output: %s", captured.outputName)
+	}
+	if captured.backend != "llvm" {
+		t.Fatalf("unexpected captured backend: %s", captured.backend)
+	}
+	if captured.optLevel != "2" {
+		t.Fatalf("unexpected captured opt-level: %s", captured.optLevel)
+	}
+	if captured.target != "windows" {
+		t.Fatalf("unexpected captured target: %s", captured.target)
+	}
+}
+
+func TestResolvePythonBenchmarkTargetFallsBackToSiblingPythonFile(t *testing.T) {
+	tempDir := t.TempDir()
+	targetPath := filepath.Join(tempDir, "bench_numeric.tai")
+	pythonPath := filepath.Join(tempDir, "bench_numeric.py")
+	if err := os.WriteFile(targetPath, []byte(".版本 3"), 0644); err != nil {
+		t.Fatalf("write tai target: %v", err)
+	}
+	if err := os.WriteFile(pythonPath, []byte("print(1)\n"), 0644); err != nil {
+		t.Fatalf("write python target: %v", err)
+	}
+
+	resolved, err := resolvePythonBenchmarkTarget(targetPath, "")
+	if err != nil {
+		t.Fatalf("resolvePythonBenchmarkTarget returned error: %v", err)
+	}
+	if resolved != pythonPath {
+		t.Fatalf("expected %s, got %s", pythonPath, resolved)
+	}
+}
+
+func TestWriteBenchmarkReportCreatesJsonFile(t *testing.T) {
+	tempDir := t.TempDir()
+	reportPath := filepath.Join(tempDir, "reports", "bench.json")
+	report := benchmarkReport{
+		Target:        "cli\\bench_numeric.tai",
+		Output:        "bench_numeric.exe",
+		Backend:       "llvm",
+		OptLevel:      "2",
+		PythonCommand: "python",
+		PythonScript:  "cli\\bench_numeric.py",
+		Native: benchmarkSummary{
+			Name:       "tailang-native",
+			Command:    "bench_numeric.exe",
+			Iterations: 3,
+			BestMillis: 1.1,
+			AvgMillis:  1.3,
+			LastStdout: "1000000",
+		},
+		Python: benchmarkSummary{
+			Name:       "python-baseline",
+			Command:    "python cli\\bench_numeric.py",
+			Iterations: 3,
+			BestMillis: 2.4,
+			AvgMillis:  2.8,
+			LastStdout: "1000000",
+		},
+		Speedup:     2.15,
+		GeneratedAt: "2026-04-20T12:00:00Z",
+	}
+
+	if err := writeBenchmarkReport(reportPath, report); err != nil {
+		t.Fatalf("writeBenchmarkReport returned error: %v", err)
+	}
+
+	payload, err := os.ReadFile(reportPath)
+	if err != nil {
+		t.Fatalf("read report: %v", err)
+	}
+
+	var decoded benchmarkReport
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("unmarshal report: %v", err)
+	}
+	if decoded.Speedup != report.Speedup {
+		t.Fatalf("expected speedup %.2f, got %.2f", report.Speedup, decoded.Speedup)
+	}
+	if decoded.Native.LastStdout != "1000000" {
+		t.Fatalf("unexpected native stdout: %s", decoded.Native.LastStdout)
+	}
+}
+
+func TestBenchCommandBuildsRunsAndWritesReport(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	tempDir := t.TempDir()
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("chdir temp dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(wd)
+	})
+
+	cliDir := filepath.Join(tempDir, "cli")
+	if err := os.MkdirAll(cliDir, 0755); err != nil {
+		t.Fatalf("mkdir cli: %v", err)
+	}
+	taiPath := filepath.Join(cliDir, defaultBenchTarget())
+	pythonPath := filepath.Join(cliDir, "bench_numeric.py")
+	if err := os.WriteFile(taiPath, []byte(".版本 3"), 0644); err != nil {
+		t.Fatalf("write tai target: %v", err)
+	}
+	if err := os.WriteFile(pythonPath, []byte("print(1000000)\n"), 0644); err != nil {
+		t.Fatalf("write python target: %v", err)
+	}
+
+	originalBuild := executeBuildFunc
+	originalRun := runBenchmarkCommand
+	t.Cleanup(func() {
+		executeBuildFunc = originalBuild
+		runBenchmarkCommand = originalRun
+	})
+
+	var buildCaptured buildRequest
+	executeBuildFunc = func(request buildRequest) error {
+		buildCaptured = request
+		return nil
+	}
+
+	var commands []string
+	runBenchmarkCommand = func(name string, args ...string) ([]byte, time.Duration, error) {
+		commands = append(commands, strings.Join(append([]string{name}, args...), " "))
+		if len(args) == 0 {
+			return []byte("1000000\n"), 2 * time.Millisecond, nil
+		}
+		return []byte("1000000\n"), 4 * time.Millisecond, nil
+	}
+
+	reportPath := filepath.Join(tempDir, "out", "bench-report.json")
+	cmd := newBenchCommandForTest()
+	cmd.RunE = benchCmd.RunE
+	if err := cmd.Flags().Set("output", "bench-out.exe"); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+	if err := cmd.Flags().Set("backend", "llvm"); err != nil {
+		t.Fatalf("set backend: %v", err)
+	}
+	if err := cmd.Flags().Set("opt-level", "2"); err != nil {
+		t.Fatalf("set opt-level: %v", err)
+	}
+	if err := cmd.Flags().Set("iterations", "2"); err != nil {
+		t.Fatalf("set iterations: %v", err)
+	}
+	if err := cmd.Flags().Set("report", reportPath); err != nil {
+		t.Fatalf("set report: %v", err)
+	}
+
+	if err := cmd.RunE(cmd, nil); err != nil {
+		t.Fatalf("bench command failed: %v", err)
+	}
+
+	if buildCaptured.outputName != "bench-out.exe" {
+		t.Fatalf("unexpected build output: %s", buildCaptured.outputName)
+	}
+	if len(commands) != 4 {
+		t.Fatalf("expected 4 benchmark runs, got %d", len(commands))
+	}
+	expectedNative := executableCommandPath("bench-out.exe")
+	if commands[0] != expectedNative {
+		t.Fatalf("unexpected native command: %s", commands[0])
+	}
+	if !strings.HasPrefix(commands[2], "python ") {
+		t.Fatalf("unexpected python command: %s", commands[2])
+	}
+	if _, err := os.Stat(reportPath); err != nil {
+		t.Fatalf("expected report file to be written: %v", err)
+	}
+}
+
+func TestRunCommandRoutesThroughSharedBuildAndExec(t *testing.T) {
+	tempDir := t.TempDir()
+	inputPath := filepath.Join(tempDir, "main.tai")
+	if err := os.WriteFile(inputPath, []byte(".版本 3"), 0644); err != nil {
+		t.Fatalf("write input: %v", err)
+	}
+
+	originalBuild := executeBuildFunc
+	originalExec := execCommand
+	originalRunExec := runExecCommand
+	t.Cleanup(func() {
+		executeBuildFunc = originalBuild
+		execCommand = originalExec
+		runExecCommand = originalRunExec
+	})
+
+	var captured buildRequest
+	executeBuildFunc = func(request buildRequest) error {
+		captured = request
+		return nil
+	}
+
+	var execName string
+	var executedArgs []string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		execName = name
+		if runtime.GOOS == "windows" {
+			return exec.Command("cmd", "/c", "exit", "0")
+		}
+		return exec.Command("sh", "-c", "exit 0")
+	}
+	runExecCommand = func(cmd *exec.Cmd) error {
+		executedArgs = append([]string{}, cmd.Args[1:]...)
+		return nil
+	}
+
+	cmd := newRunCommandForTest()
+	if err := cmd.Flags().Set("output", "run-out.exe"); err != nil {
+		t.Fatalf("set output: %v", err)
+	}
+	if err := cmd.Flags().Set("target", "windows"); err != nil {
+		t.Fatalf("set target: %v", err)
+	}
+	if err := cmd.Flags().Set("backend", "llvm"); err != nil {
+		t.Fatalf("set backend: %v", err)
+	}
+	if err := cmd.Flags().Set("opt-level", "2"); err != nil {
+		t.Fatalf("set opt-level: %v", err)
+	}
+	if err := cmd.Flags().Set("args", "alpha beta"); err != nil {
+		t.Fatalf("set args: %v", err)
+	}
+
+	if err := cmd.RunE(cmd, []string{inputPath}); err != nil {
+		t.Fatalf("run command failed: %v", err)
+	}
+	if captured.inputFile != inputPath {
+		t.Fatalf("unexpected build input: %s", captured.inputFile)
+	}
+	if captured.outputName != "run-out.exe" {
+		t.Fatalf("unexpected build output: %s", captured.outputName)
+	}
+	if captured.backend != "llvm" {
+		t.Fatalf("unexpected build backend: %s", captured.backend)
+	}
+	if captured.optLevel != "2" {
+		t.Fatalf("unexpected build opt-level: %s", captured.optLevel)
+	}
+	if execName != "run-out.exe" {
+		t.Fatalf("unexpected exec name: %s", execName)
+	}
+	if len(executedArgs) < 2 {
+		t.Fatalf("unexpected exec args: %v", executedArgs)
+	}
+	if got := strings.Join(executedArgs[len(executedArgs)-2:], " "); got != "alpha beta" {
+		t.Fatalf("unexpected exec args: %s", got)
+	}
+}
+
+func TestExecutableCommandPathPrefixesCurrentDirectory(t *testing.T) {
+	got := executableCommandPath("bench_numeric.exe")
+	if runtime.GOOS == "windows" {
+		if got != ".\\bench_numeric.exe" {
+			t.Fatalf("unexpected windows exec path: %s", got)
+		}
+		return
+	}
+	if got != "./bench_numeric.exe" {
+		t.Fatalf("unexpected posix exec path: %s", got)
 	}
 }
 
