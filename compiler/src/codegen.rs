@@ -1318,4 +1318,36 @@ mod tests {
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "ok\n");
     }
+
+    #[test]
+    fn runs_text_equality_through_self_native_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序, 整数型
+.如果 "同一文本" 等于 "同一文本"
+    .返回 1
+.否则
+    .返回 0
+.如果结束
+"#;
+        let result = run_native_executable(source);
+        assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn runs_text_inequality_through_self_native_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序, 整数型
+.如果 "甲" 不等于 "乙"
+    .返回 1
+.否则
+    .返回 0
+.如果结束
+"#;
+        let result = run_native_executable(source);
+        assert_eq!(result.exit_code, 1);
+    }
 }

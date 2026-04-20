@@ -686,4 +686,28 @@ mod tests {
             _ => panic!("expected call expression"),
         }
     }
+
+    #[test]
+    fn lowers_text_equality_condition() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序, 整数型
+.如果 "甲" 等于 "甲"
+    .返回 1
+.否则
+    .返回 0
+.如果结束
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::If { condition, .. } = &hir.functions[0].body[0] else {
+            panic!("expected if statement");
+        };
+        assert_eq!(condition.ty, TaiType::Boolean);
+        match &condition.kind {
+            HirExprKind::Binary { op, .. } => assert_eq!(*op, HirBinaryOp::Equal),
+            _ => panic!("expected binary condition"),
+        }
+    }
 }

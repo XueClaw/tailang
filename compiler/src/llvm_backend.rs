@@ -541,6 +541,8 @@ impl<'a> FunctionRenderer<'a> {
                     (TaiType::Integer, MirBinaryOp::LessEqual) => "sle",
                     (TaiType::Boolean, MirBinaryOp::Equal) => "eq",
                     (TaiType::Boolean, MirBinaryOp::NotEqual) => "ne",
+                    (TaiType::Text, MirBinaryOp::Equal) => "eq",
+                    (TaiType::Text, MirBinaryOp::NotEqual) => "ne",
                     _ => return Err("LLVM 后端暂不支持该比较操作数类型".to_string()),
                 };
                 out.push_str(&format!(
@@ -1036,5 +1038,37 @@ mod tests {
 "#;
         let result = compile_and_run(source, "match_flow");
         assert_eq!(result.exit_code, 20);
+    }
+
+    #[test]
+    fn runs_text_equality_through_llvm_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序, 整数型
+.如果 "同一文本" 等于 "同一文本"
+    .返回 1
+.否则
+    .返回 0
+.如果结束
+"#;
+        let result = compile_and_run(source, "text_equal");
+        assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn runs_text_inequality_through_llvm_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序, 整数型
+.如果 "甲" 不等于 "乙"
+    .返回 1
+.否则
+    .返回 0
+.如果结束
+"#;
+        let result = compile_and_run(source, "text_not_equal");
+        assert_eq!(result.exit_code, 1);
     }
 }

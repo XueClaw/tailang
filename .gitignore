@@ -21,6 +21,11 @@ out/
 .meng.cache
 *.cache
 *.log
+*.stdout.txt
+*.bench.json
+
+# Local runtime / orchestration state
+.omx/
 
 # IDE
 .vscode/

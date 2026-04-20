@@ -1,25 +1,32 @@
-# Tailang `.tai` JSON Snapshot Schema
+# Tailang `.tai` JSON 兼容快照说明
 
-统一 `.tai` schema 文档见 [tai.schema.json](/C:/Users/xueyihan/.openclaw/workspace/tailang/docs/spec/tai.schema.json)。
+统一 JSON schema 定义见 [tai.schema.json](/C:/Users/xueyihan/.openclaw/workspace/tailang/docs/spec/tai.schema.json)。
 
-注意：根据 PRD v2.2，`.tai` 的产品定位已经调整为“太语言正式源码”。
-本文件描述的 **不是 `.tai` 语言本身**，而是当前仓库仍在使用的 **JSON 兼容快照格式**。
+## 定位
 
-新的语言方向见 [TAI_LANGUAGE_V3.md](/C:/Users/xueyihan/.openclaw/workspace/tailang/docs/spec/TAI_LANGUAGE_V3.md)。
+`.tai` 当前正式主线是文本源码语言，规范见 [TAI_LANGUAGE_V3.md](/C:/Users/xueyihan/.openclaw/workspace/tailang/docs/spec/TAI_LANGUAGE_V3.md)。
 
-这份 schema 当前只用于约束以下兼容实现保持一致：
+本文件描述的不是 `.tai` 语言本身，而是仓库仍保留的 **JSON 兼容快照格式**。这一兼容格式仅用于旧路径兼容、快照归一化和部分预编译输出约束。
 
-- Go CLI 预编译输出与校验
+## 仍在使用兼容快照的场景
+
+- Go CLI 的部分 LLM / 预编译输出兼容路径
 - Rust compiler 中的旧版 `.tai` JSON 反序列化与规范化
-- Rust standalone precompiler 的 provider 输出规范化
+- 兼容旧快照输入的校验与迁移路径
 
-## 设计原则
+## 不再把它当作什么
 
-1. 该格式是结构化快照，不是最终 `.tai` 文本语言规范。
-2. 该格式必须是稳定 JSON，便于缓存、版本控制和跨语言消费。
-3. 该格式只承载真实存在或可稳定推断的结构，不允许为了凑模板臆造逻辑。
+- 不是 `.tai` 语言规范
+- 不是默认主线输入格式
+- 不是未来新增语言能力的设计中心
 
-## 顶层字段
+## 当前维护原则
+
+1. 文本 `.tai` 是正式主线；JSON 快照只是兼容层。
+2. 兼容格式允许继续存在，但不应主导新设计。
+3. 若兼容格式变化，必须同步更新 schema、CLI 兼容代码和 Rust 兼容代码。
+
+## 当前顶层字段
 
 - `version`
 - `source`
@@ -27,18 +34,18 @@
 - `code_blocks`
 - `unresolved_items`
 
-## 当前实现约定
+## 同步修改点
 
-- `source.temperature` 当前以字符串保存，保证 Go/Rust 序列化一致。
-- `linked_to` 为可选字段。
-- `unresolved_items` 用于承载信息不足但不应臆造补全的语义空缺。
-
-## 维护规则
-
-后续若调整这个 JSON 快照格式，必须同时更新：
+如需修改 JSON 兼容快照格式，至少同步检查以下位置：
 
 1. [tai.schema.json](/C:/Users/xueyihan/.openclaw/workspace/tailang/docs/spec/tai.schema.json)
 2. [compiler/src/tai.rs](/C:/Users/xueyihan/.openclaw/workspace/tailang/compiler/src/tai.rs)
 3. [compiler/src/precompiler.rs](/C:/Users/xueyihan/.openclaw/workspace/tailang/compiler/src/precompiler.rs)
-4. [precompiler/src/lib.rs](/C:/Users/xueyihan/.openclaw/workspace/tailang/precompiler/src/lib.rs)
-5. [cli/cmd/llm.go](/C:/Users/xueyihan/.openclaw/workspace/tailang/cli/cmd/llm.go)
+4. [cli/cmd/llm.go](/C:/Users/xueyihan/.openclaw/workspace/tailang/cli/cmd/llm.go)
+5. [cli/cmd/validate_tai.go](/C:/Users/xueyihan/.openclaw/workspace/tailang/cli/cmd/validate_tai.go)
+
+## 建议终态
+
+- 文本 `.tai` 继续扩展语言能力
+- JSON 兼容快照逐步收缩为导入/迁移/缓存专用格式
+- 新功能优先写入文本 `.tai` 规范和实现，而不是继续扩张快照语义
