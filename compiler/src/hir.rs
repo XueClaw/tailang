@@ -260,12 +260,13 @@ impl<'a> HirContext<'a> {
     fn lower_stmt(&mut self, stmt: &TaiExecStmt) -> Result<HirStmt, String> {
         match stmt {
             TaiExecStmt::Let { name, value } => {
+                let lowered = value.as_ref().map(|expr| self.lower_expr(expr)).transpose()?;
                 let ty = self
                     .bindings
                     .get(name)
                     .cloned()
+                    .or_else(|| lowered.as_ref().map(|expr| expr.ty.clone()))
                     .unwrap_or_else(|| TaiType::Integer);
-                let lowered = value.as_ref().map(|expr| self.lower_expr(expr)).transpose()?;
                 if let Some(expr) = &lowered {
                     self.ensure_assignable(&ty, &expr.ty, &format!("变量 '{}'", name))?;
                 }
@@ -658,6 +659,48 @@ mod tests {
             panic!("expected let statement");
         };
         assert_eq!(*ty, TaiType::Integer);
+    }
+
+    #[test]
+    fn infers_text_type_for_untyped_local_let() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序, 整数型
+.令 名称 = "结衣"
+.如果 名称 等于 "结衣"
+    .返回 1
+.否则
+    .返回 0
+.如果结束
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::Let { ty, .. } = &hir.functions[0].body[0] else {
+            panic!("expected let statement");
+        };
+        assert_eq!(*ty, TaiType::Text);
+    }
+
+    #[test]
+    fn infers_boolean_type_for_untyped_local_let() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序, 整数型
+.令 已通过 = .真
+.如果 已通过
+    .返回 1
+.否则
+    .返回 0
+.如果结束
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::Let { ty, .. } = &hir.functions[0].body[0] else {
+            panic!("expected let statement");
+        };
+        assert_eq!(*ty, TaiType::Boolean);
     }
 
     #[test]
