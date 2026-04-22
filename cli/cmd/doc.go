@@ -247,9 +247,10 @@ func extractTextualTaiModules(source string) []taiModule {
 				continue
 			}
 			header := strings.TrimSpace(strings.TrimPrefix(line, ".子程序 "))
-			name := strings.TrimSpace(strings.Split(header, ",")[0])
+			name, params := parseTextualTaiFunctionHeader(header)
 			currentModule.Functions = append(currentModule.Functions, taiFunction{Name: name})
 			currentFunction = &currentModule.Functions[len(currentModule.Functions)-1]
+			currentFunction.Params = append(currentFunction.Params, params...)
 		case strings.HasPrefix(line, ".参数 "):
 			if currentFunction == nil {
 				continue
@@ -268,6 +269,32 @@ func extractTextualTaiModules(source string) []taiModule {
 	}
 
 	return modules
+}
+
+func parseTextualTaiFunctionHeader(header string) (string, []string) {
+	header = strings.TrimSpace(header)
+	if before, _, ok := strings.Cut(header, "->"); ok {
+		header = strings.TrimSpace(before)
+	}
+	if !strings.Contains(header, "(") {
+		name := strings.TrimSpace(strings.Split(header, ",")[0])
+		return name, nil
+	}
+	name, rest, _ := strings.Cut(header, "(")
+	paramsText, _, _ := strings.Cut(rest, ")")
+	params := []string{}
+	for _, raw := range strings.Split(paramsText, ",") {
+		item := strings.TrimSpace(raw)
+		if item == "" {
+			continue
+		}
+		if paramName, _, ok := strings.Cut(item, ":"); ok {
+			params = append(params, strings.TrimSpace(paramName))
+		} else {
+			params = append(params, item)
+		}
+	}
+	return strings.TrimSpace(name), params
 }
 
 func extractTextualTaiCodeBlocks(source string) []taiCodeBlock {

@@ -908,7 +908,7 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .返回 3
 "#;
         let result = compile_and_run(source, "return3");
@@ -920,11 +920,10 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 加一, 整数型
-.参数 输入, 整数型
+.子程序 加一(输入: 整数型) -> 整数型, , ,
 .返回 输入 + 1
 
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .返回 加一(2)
 "#;
         let result = compile_and_run(source, "call_add_one");
@@ -936,11 +935,10 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 是否三, 逻辑型
-.参数 输入, 整数型
+.子程序 是否三(输入: 整数型) -> 逻辑型, , ,
 .返回 输入 等于 3
 
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .如果 是否三(3)
     .返回 1
 .否则
@@ -956,11 +954,11 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 打招呼, 空
+.子程序 打招呼() -> 空, , ,
 .显示 "hi"
 .返回
 
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 打招呼()
 .返回 0
 "#;
@@ -974,10 +972,10 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 取文本, 文本型
+.子程序 取文本() -> 文本型, , ,
 .返回 "ok"
 
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .显示 取文本()
 .返回 0
 "#;
@@ -991,7 +989,7 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .显示 "Hello World"
 .返回 0
 "#;
@@ -1005,9 +1003,9 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 性能测试
-.子程序 主程序, 整数型
-.令 总和 = 0
-.令 计数 = 0
+.子程序 主程序() -> 整数型, , ,
+总和: 整数型 = 0
+计数: 整数型 = 0
 .循环判断首 计数 小于 1000000
     总和 = 总和 + 1
     计数 = 计数 + 1
@@ -1025,8 +1023,8 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
-.令 状态 = 2
+.子程序 主程序() -> 整数型, , ,
+状态: 整数型 = 2
 .判断开始 状态
 .判断 1
     .返回 10
@@ -1045,7 +1043,7 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .如果 "同一文本" 等于 "同一文本"
     .返回 1
 .否则
@@ -1061,7 +1059,7 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .如果 "甲" 不等于 "乙"
     .返回 1
 .否则
@@ -1069,6 +1067,40 @@ mod tests {
 .如果结束
 "#;
         let result = compile_and_run(source, "text_not_equal");
+        assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn runs_inferred_text_local_through_llvm_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+名称: 文本型 = "结衣"
+.如果 名称 等于 "结衣"
+    .返回 1
+.否则
+    .返回 0
+.如果结束
+"#;
+        let result = compile_and_run(source, "inferred_text_local");
+        assert_eq!(result.exit_code, 1);
+    }
+
+    #[test]
+    fn runs_inferred_boolean_local_through_llvm_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+已通过: 逻辑型 = 真
+.如果 已通过
+    .返回 1
+.否则
+    .返回 0
+.如果结束
+"#;
+        let result = compile_and_run(source, "inferred_boolean_local");
         assert_eq!(result.exit_code, 1);
     }
 }

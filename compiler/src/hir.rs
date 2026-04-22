@@ -259,12 +259,19 @@ impl<'a> HirContext<'a> {
 
     fn lower_stmt(&mut self, stmt: &TaiExecStmt) -> Result<HirStmt, String> {
         match stmt {
-            TaiExecStmt::Let { name, value } => {
+            TaiExecStmt::Let { name, ty, value } => {
                 let lowered = value.as_ref().map(|expr| self.lower_expr(expr)).transpose()?;
                 let ty = self
                     .bindings
                     .get(name)
                     .cloned()
+                    .or_else(|| {
+                        ty.as_deref()
+                            .map(TaiType::from_decl_name)
+                            .transpose()
+                            .ok()
+                            .flatten()
+                    })
                     .or_else(|| lowered.as_ref().map(|expr| expr.ty.clone()))
                     .unwrap_or_else(|| TaiType::Integer);
                 if let Some(expr) = &lowered {
@@ -570,12 +577,11 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 加一, 整数型
-.参数 输入, 整数型
+.子程序 加一(输入: 整数型) -> 整数型, , ,
 .返回 输入 + 1
 
-.子程序 主程序, 整数型
-.局部变量 计数, 整数型
+.子程序 主程序() -> 整数型, , ,
+计数: 整数型 = 0
 计数 = 加一(1)
 .如果 计数 小于 3
     .显示 "ok"
@@ -589,8 +595,9 @@ mod tests {
         assert_eq!(hir.entry_label, "主程序");
         assert_eq!(hir.functions.len(), 2);
         assert_eq!(hir.functions[0].return_type, TaiType::Integer);
-        assert!(matches!(hir.functions[1].body[0], HirStmt::Assign { .. }));
-        assert!(matches!(hir.functions[1].body[1], HirStmt::If { .. }));
+        assert!(matches!(hir.functions[1].body[0], HirStmt::Let { .. }));
+        assert!(matches!(hir.functions[1].body[1], HirStmt::Assign { .. }));
+        assert!(matches!(hir.functions[1].body[2], HirStmt::If { .. }));
     }
 
     #[test]
@@ -598,8 +605,7 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
-.参数 计数, 整数型
+.子程序 主程序(计数: 整数型) -> 整数型, , ,
 .循环判断首 计数 小于 10
     .到循环尾
     .跳出循环
@@ -620,7 +626,7 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .返回 "错误"
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
@@ -633,7 +639,7 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .如果 1
     .返回 1
 .如果结束
@@ -649,8 +655,8 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
-.令 计数 = 1
+.子程序 主程序() -> 整数型, , ,
+计数: 整数型 = 1
 .返回 计数 + 1
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
@@ -666,8 +672,8 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
-.令 名称 = "结衣"
+.子程序 主程序() -> 整数型, , ,
+名称: 文本型 = "结衣"
 .如果 名称 等于 "结衣"
     .返回 1
 .否则
@@ -687,8 +693,8 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
-.令 已通过 = .真
+.子程序 主程序() -> 整数型, , ,
+已通过: 逻辑型 = 真
 .如果 已通过
     .返回 1
 .否则
@@ -708,11 +714,10 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 加一, 整数型
-.参数 输入, 整数型
+.子程序 加一(输入: 整数型) -> 整数型, , ,
 .返回 输入 + 1
 
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .返回 加一(2)
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
@@ -735,7 +740,7 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .如果 "甲" 等于 "甲"
     .返回 1
 .否则

@@ -12,10 +12,10 @@ pub enum TaiType {
 impl TaiType {
     pub fn from_decl_name(name: &str) -> Result<Self, String> {
         match name.trim() {
-            "整数型" | "整数" => Ok(Self::Integer),
-            "逻辑型" | "布尔型" | "真假型" | "布尔" => Ok(Self::Boolean),
-            "文本型" | "文本" => Ok(Self::Text),
-            "空" | "空型" | "无返回" => Ok(Self::Void),
+            "整数型" | "整数" | "int" => Ok(Self::Integer),
+            "逻辑型" | "布尔型" | "真假型" | "布尔" | "bool" => Ok(Self::Boolean),
+            "文本型" | "文本" | "text" => Ok(Self::Text),
+            "空" | "空型" | "无返回" | "void" => Ok(Self::Void),
             other => Err(format!("当前类型系统暂不支持类型 '{}'", other)),
         }
     }

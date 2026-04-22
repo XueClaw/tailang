@@ -25,6 +25,9 @@ pub struct TaiModuleDecl {
 pub struct TaiFunctionDecl {
     pub name: String,
     pub return_type: Option<String>,
+    pub slot3: Option<String>,
+    pub slot4: Option<String>,
+    pub binding: Option<String>,
     pub params: Vec<String>,
     pub param_decls: Vec<TaiVarDecl>,
     pub locals: Vec<TaiVarDecl>,

@@ -69,15 +69,12 @@ func TestValidateTaiCommandTextualSourceSuccess(t *testing.T) {
 .程序集 认证
 .说明 "认证流程"
 
-.子程序 登录, 文本型
-.参数 邮箱, 文本型
-.参数 密码, 文本型
-.局部变量 结果, 文本型
+.子程序 登录(邮箱: 文本型, 密码: 文本型) -> 文本型, , ,
 .校验 "邮箱不能为空"
 .如果 邮箱 等于 ""
     .返回 "邮箱不能为空"
 .如果结束
-结果 = 邮箱
+结果: 文本型 = 邮箱
 .返回 结果
 .代码 Rust
 println!("hello");
@@ -99,7 +96,7 @@ func TestValidateTaiCommandTextualSourceFailure(t *testing.T) {
 	tempDir := t.TempDir()
 	input := filepath.Join(tempDir, "invalid-textual.tai")
 	content := `.程序集 认证
-.子程序 登录, 文本型
+.子程序 登录() -> 文本型, , ,
 .如果 邮箱 等于 ""
 `
 
@@ -117,7 +114,7 @@ func TestValidateTaiCommandRejectsUnclosedBlocks(t *testing.T) {
 	input := filepath.Join(tempDir, "unclosed.tai")
 	content := `.版本 3
 .程序集 认证
-.子程序 登录, 文本型
+.子程序 登录() -> 文本型, , ,
 .如果 真
     .返回 "ok"
 `
@@ -136,16 +133,16 @@ func TestValidateTaiCommandSupportsMatchAndLoop(t *testing.T) {
 	input := filepath.Join(tempDir, "match-loop.tai")
 	content := `.版本 3
 .程序集 认证
-.子程序 登录, 文本型
+.子程序 登录() -> 文本型, , ,
 .判断开始 状态
 .判断 "成功"
     .返回 "ok"
 .默认
-    .循环判断首 真
+    .循环判断首 true
         .跳出循环
-    .循环判断尾
+    .end
     .返回 "unknown"
-.判断结束
+.end
 `
 
 	if err := os.WriteFile(input, []byte(content), 0644); err != nil {

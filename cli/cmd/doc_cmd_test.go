@@ -12,7 +12,7 @@ func TestGenerateTaiDocsFromTaiFile(t *testing.T) {
 	input := filepath.Join(tempDir, "main.tai")
 	output := filepath.Join(tempDir, "docs")
 
-	content := ".版本 3\n.程序集 auth\n.说明 \"认证流程\"\n\n.子程序 login\n.参数 email, 任意型\n.参数 password, 任意型\n.说明 \"邮箱密码登录\"\n.校验 \"邮箱不能为空\"\n\n.代码 python\nprint('hello')\n.代码结束\n\n.待定 rule, \"缺少密码复杂度规则\"\n"
+	content := ".版本 3\n.程序集 auth\n.说明 \"认证流程\"\n\n.子程序 login(email: text, password: text) -> text, , ,\n.说明 \"邮箱密码登录\"\n.校验 \"邮箱不能为空\"\n\n.代码 python\nprint('hello')\n.代码结束\n\n.待定 rule, \"缺少密码复杂度规则\"\n"
 	if err := os.WriteFile(input, []byte(content), 0644); err != nil {
 		t.Fatalf("write input: %v", err)
 	}

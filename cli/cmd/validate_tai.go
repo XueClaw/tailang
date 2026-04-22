@@ -71,17 +71,16 @@ func init() {
 }
 
 var (
-	versionPattern    = regexp.MustCompile(`^\.版本\s+\S+$`)
-	metaPattern       = regexp.MustCompile(`^\.元信息\s+\S+\s*=\s*"[^"]*"$`)
-	targetPattern     = regexp.MustCompile(`^\.目标平台\s+\S+$`)
-	modulePattern     = regexp.MustCompile(`^\.程序集\s+\S+$`)
-	functionPattern   = regexp.MustCompile(`^\.子程序\s+\S+(\s*,\s*\S+)?$`)
-	paramPattern      = regexp.MustCompile(`^\.参数\s+\S+(\s*,\s*\S+)?(\s*=\s*.+)?$`)
-	variablePattern   = regexp.MustCompile(`^\.(局部变量|程序集变量|常量)\s+\S+(\s*,\s*[^=]+)?(\s*=\s*.+)?$`)
-	docPattern        = regexp.MustCompile(`^\.说明\s+"[^"]*"$`)
-	validatePattern   = regexp.MustCompile(`^\.校验\s+"[^"]*"$`)
-	codePattern       = regexp.MustCompile(`^\.代码\s+\S+$`)
-	unresolvedPattern = regexp.MustCompile(`^\.待定\s+\S+(\s*,\s*"[^"]+"|\s+"[^"]+")$`)
+	versionPattern      = regexp.MustCompile(`^\.(版本|version)\s+\S+$`)
+	metaPattern         = regexp.MustCompile(`^\.(元信息|meta)\s+\S+\s*=\s*"[^"]*"$`)
+	targetPattern       = regexp.MustCompile(`^\.(目标平台|target)\s+\S+$`)
+	modulePattern       = regexp.MustCompile(`^\.(程序集|module)\s+\S+$`)
+	functionPattern     = regexp.MustCompile(`^\.(子程序|subprogram)\s+\S+\s*\([^)]*\)\s*->\s*[^,]+(\s*,\s*[^,]*){3}$`)
+	docPattern          = regexp.MustCompile(`^\.(说明|doc)\s+"[^"]*"$`)
+	validatePattern     = regexp.MustCompile(`^\.(校验|validate)\s+"[^"]*"$`)
+	codePattern         = regexp.MustCompile(`^\.(代码|code)\s+\S+$`)
+	unresolvedPattern   = regexp.MustCompile(`^\.(待定|todo)\s+\S+(\s*,\s*"[^"]+"|\s+"[^"]+")$`)
+	typedLocalPattern   = regexp.MustCompile(`^[A-Za-z_\p{Han}][A-Za-z0-9_\p{Han}]*\s*:\s*[^=]+(\s*=\s*.+)?$`)
 )
 
 type textualTaiBlock struct {
@@ -111,12 +110,10 @@ func validateTextualTaiSource(input string) error {
 			targetPattern.MatchString(line),
 			modulePattern.MatchString(line),
 			functionPattern.MatchString(line),
-			paramPattern.MatchString(line),
-			variablePattern.MatchString(line),
 			docPattern.MatchString(line),
 			validatePattern.MatchString(line),
 			unresolvedPattern.MatchString(line):
-			if strings.HasPrefix(line, ".版本 ") || strings.HasPrefix(line, ".程序集 ") {
+			if startsWithAnyKeyword(line, ".版本 ", ".version ", ".程序集 ", ".module ") {
 				hasTopLevelDecl = true
 			}
 			continue
@@ -125,82 +122,92 @@ func validateTextualTaiSource(input string) error {
 			stack = append(stack, textualTaiBlock{kind: "代码", line: lineNo})
 			continue
 
-		case line == ".代码结束":
+		case matchesAnyKeyword(line, ".代码结束", ".endcode"):
 			if err := popExpectedBlock(&stack, "代码", lineNo); err != nil {
 				return err
 			}
 			continue
 
-		case strings.HasPrefix(line, ".如果 "):
+		case startsWithAnyKeyword(line, ".如果 ", ".if "):
 			stack = append(stack, textualTaiBlock{kind: "如果", line: lineNo})
 			continue
 
-		case strings.HasPrefix(line, ".否则如果 "):
+		case startsWithAnyKeyword(line, ".否则如果 "):
 			if err := requireOpenBlock(stack, "如果", lineNo, ".否则如果"); err != nil {
 				return err
 			}
 			continue
 
-		case line == ".否则":
+		case matchesAnyKeyword(line, ".否则", ".else"):
 			if err := requireOpenBlock(stack, "如果", lineNo, ".否则"); err != nil {
 				return err
 			}
 			continue
 
-		case line == ".如果结束":
+		case matchesAnyKeyword(line, ".如果结束"):
 			if err := popExpectedBlock(&stack, "如果", lineNo); err != nil {
 				return err
 			}
 			continue
 
-		case strings.HasPrefix(line, ".判断开始 "):
+		case startsWithAnyKeyword(line, ".判断开始 ", ".match "):
 			stack = append(stack, textualTaiBlock{kind: "判断", line: lineNo})
 			continue
 
-		case strings.HasPrefix(line, ".判断 "):
+		case startsWithAnyKeyword(line, ".判断 ", ".case "):
 			if err := requireOpenBlock(stack, "判断", lineNo, ".判断"); err != nil {
 				return err
 			}
 			continue
 
-		case line == ".默认":
+		case matchesAnyKeyword(line, ".默认", ".default"):
 			if err := requireOpenBlock(stack, "判断", lineNo, ".默认"); err != nil {
 				return err
 			}
 			continue
 
-		case line == ".判断结束":
+		case matchesAnyKeyword(line, ".判断结束"):
 			if err := popExpectedBlock(&stack, "判断", lineNo); err != nil {
 				return err
 			}
 			continue
 
-		case strings.HasPrefix(line, ".循环判断首 "), strings.HasPrefix(line, ".循环当 "), strings.HasPrefix(line, ".计次循环首 "), strings.HasPrefix(line, ".变量循环首 "):
+		case startsWithAnyKeyword(line, ".循环判断首 ", ".while "):
 			stack = append(stack, textualTaiBlock{kind: "循环", line: lineNo})
 			continue
 
-		case line == ".循环判断尾", line == ".变量循环尾":
+		case matchesAnyKeyword(line, ".循环判断尾"):
 			if err := popExpectedBlock(&stack, "循环", lineNo); err != nil {
 				return err
 			}
 			continue
 
-		case line == ".跳出循环", line == ".到循环尾":
+		case matchesAnyKeyword(line, ".end"):
+			if len(stack) == 0 {
+				return fmt.Errorf("invalid textual .tai source at line %d: unexpected .end", lineNo)
+			}
+			stack = stack[:len(stack)-1]
 			continue
 
-		case strings.HasPrefix(line, ".返回"):
+		case matchesAnyKeyword(line, ".跳出循环", ".break", ".到循环尾", ".continue"):
 			continue
 
-		case strings.HasPrefix(line, ".显示 "):
+		case startsWithAnyKeyword(line, ".返回", ".return"):
 			continue
 
-		case strings.HasPrefix(line, ".令 "):
+		case startsWithAnyKeyword(line, ".显示 ", ".print "):
 			continue
 
-		case strings.HasPrefix(line, ".真"), strings.HasPrefix(line, ".假"), strings.HasPrefix(line, ".空"):
+		case typedLocalPattern.MatchString(line):
+			continue
+
+		case matchesAnyKeyword(line, "真", "假", "空", "true", "false", "null"), startsWithAnyKeyword(line, "true ", "false ", "null "):
 			continue
 
 		default:
+			if startsWithAnyKeyword(line, ".参数 ", ".局部变量 ", ".常量 ", ".param ", ".local ", ".const ") {
+				return fmt.Errorf("invalid textual .tai source at line %d: deprecated declaration syntax %q", lineNo, line)
+			}
 			if strings.HasPrefix(line, ".") {
 				return fmt.Errorf("invalid textual .tai source at line %d: unknown or malformed directive %q", lineNo, line)
 			}
@@ -242,4 +249,22 @@ func popExpectedBlock(stack *[]textualTaiBlock, kind string, lineNo int) error {
 	}
 	*stack = (*stack)[:len(*stack)-1]
 	return nil
+}
+
+func startsWithAnyKeyword(line string, prefixes ...string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func matchesAnyKeyword(line string, keywords ...string) bool {
+	for _, keyword := range keywords {
+		if line == keyword {
+			return true
+		}
+	}
+	return false
 }

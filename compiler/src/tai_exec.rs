@@ -1,6 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaiExecStmt {
-    Let { name: String, value: Option<TaiExecExpr> },
+    Let { name: String, ty: Option<String>, value: Option<TaiExecExpr> },
     Print(TaiExecExpr),
     Return(Option<TaiExecExpr>),
     Break,
@@ -221,6 +221,24 @@ impl<'a> TaiExecLexer<'a> {
             "如果结束" => Some(Keyword::End),
             "循环判断尾" => Some(Keyword::End),
             "判断结束" => Some(Keyword::End),
+            "version" => Some(Keyword::Begin),
+            "if" => Some(Keyword::If),
+            "else" => Some(Keyword::Else),
+            "while" => Some(Keyword::While),
+            "return" => Some(Keyword::Return),
+            "print" => Some(Keyword::Print),
+            "break" => Some(Keyword::Break),
+            "continue" => Some(Keyword::Continue),
+            "match" => Some(Keyword::MatchStart),
+            "case" => Some(Keyword::Case),
+            "default" => Some(Keyword::Default),
+            "true" => Some(Keyword::True),
+            "false" => Some(Keyword::False),
+            "null" => Some(Keyword::Null),
+            "and" => Some(Keyword::And),
+            "or" => Some(Keyword::Or),
+            "not" => Some(Keyword::Not),
+            "end" => Some(Keyword::End),
             _ => None,
         };
         match keyword {
@@ -255,12 +273,40 @@ impl<'a> TaiExecLexer<'a> {
         }
         let value = self.input[start..self.index].to_string();
         match value.as_str() {
+            "令" => TokenKind::Keyword(Keyword::Let),
+            "显示" => TokenKind::Keyword(Keyword::Print),
+            "如果" | "若" => TokenKind::Keyword(Keyword::If),
+            "否则如果" => TokenKind::Keyword(Keyword::ElseIf),
+            "否则" => TokenKind::Keyword(Keyword::Else),
+            "循环当" | "循环判断首" => TokenKind::Keyword(Keyword::While),
+            "返回" => TokenKind::Keyword(Keyword::Return),
+            "跳出循环" => TokenKind::Keyword(Keyword::Break),
+            "到循环尾" => TokenKind::Keyword(Keyword::Continue),
+            "判断开始" => TokenKind::Keyword(Keyword::MatchStart),
+            "判断" => TokenKind::Keyword(Keyword::Case),
+            "默认" => TokenKind::Keyword(Keyword::Default),
+            "真" => TokenKind::Keyword(Keyword::True),
+            "假" => TokenKind::Keyword(Keyword::False),
+            "空" => TokenKind::Keyword(Keyword::Null),
+            "并且" => TokenKind::Keyword(Keyword::And),
+            "或者" => TokenKind::Keyword(Keyword::Or),
+            "非" => TokenKind::Keyword(Keyword::Not),
+            "开始" => TokenKind::Keyword(Keyword::Begin),
+            "结束" | "如果结束" | "循环判断尾" | "判断结束" => TokenKind::Keyword(Keyword::End),
+            "true" => TokenKind::Keyword(Keyword::True),
+            "false" => TokenKind::Keyword(Keyword::False),
+            "null" => TokenKind::Keyword(Keyword::Null),
+            "and" => TokenKind::Keyword(Keyword::And),
+            "or" => TokenKind::Keyword(Keyword::Or),
+            "not" => TokenKind::Keyword(Keyword::Not),
             "等于" => TokenKind::CmpEqual,
             "不等于" => TokenKind::CmpNotEqual,
             "大于" => TokenKind::CmpGreater,
             "大于或等于" => TokenKind::CmpGreaterEqual,
             "小于" => TokenKind::CmpLess,
             "小于或等于" => TokenKind::CmpLessEqual,
+            "==" => TokenKind::CmpEqual,
+            "!=" => TokenKind::CmpNotEqual,
             _ if value.chars().all(|ch| ch.is_ascii_digit()) => TokenKind::Number(value),
             _ => TokenKind::Identifier(value),
         }
@@ -308,6 +354,7 @@ impl TaiExecParser {
     }
 
     fn parse_statement(&mut self) -> Result<TaiExecStmt, TaiExecError> {
+        if self.check_identifier_local_decl() { return self.parse_typed_local_decl(); }
         if self.match_keyword(Keyword::Let) { return self.parse_let(); }
         if self.match_keyword(Keyword::Print) { return self.parse_print(); }
         if self.match_keyword(Keyword::If) { return self.parse_if(); }
@@ -322,7 +369,19 @@ impl TaiExecParser {
     fn parse_let(&mut self) -> Result<TaiExecStmt, TaiExecError> {
         let name = self.consume_identifier("需要变量名")?;
         let value = if self.match_token(|kind| matches!(kind, TokenKind::Assign)) { Some(self.parse_expression()?) } else { None };
-        Ok(TaiExecStmt::Let { name, value })
+        Ok(TaiExecStmt::Let { name, ty: None, value })
+    }
+
+    fn parse_typed_local_decl(&mut self) -> Result<TaiExecStmt, TaiExecError> {
+        let name = self.consume_identifier("需要变量名")?;
+        self.consume_token(|kind| matches!(kind, TokenKind::Colon), "变量声明缺少 ':'")?;
+        let ty = self.consume_identifier("变量声明缺少类型")?;
+        let value = if self.match_token(|kind| matches!(kind, TokenKind::Assign)) {
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+        Ok(TaiExecStmt::Let { name, ty: Some(ty), value })
     }
 
     fn parse_print(&mut self) -> Result<TaiExecStmt, TaiExecError> {
@@ -646,6 +705,15 @@ impl TaiExecParser {
     fn previous(&self) -> &Token { &self.tokens[self.current.saturating_sub(1)] }
     fn is_at_end(&self) -> bool { matches!(self.peek().kind, TokenKind::Eof) }
     fn error_here(&self, message: &str) -> TaiExecError { TaiExecError { message: message.to_string(), offset: self.peek().offset } }
+
+    fn check_identifier_local_decl(&self) -> bool {
+        matches!(&self.peek().kind, TokenKind::Identifier(_))
+            && self
+                .tokens
+                .get(self.current + 1)
+                .map(|token| matches!(token.kind, TokenKind::Colon))
+                .unwrap_or(false)
+    }
 }
 
 fn render_statements(statements: &[TaiExecStmt], indent: usize, out: &mut String) {
@@ -655,7 +723,7 @@ fn render_statements(statements: &[TaiExecStmt], indent: usize, out: &mut String
 fn render_statement(stmt: &TaiExecStmt, indent: usize, out: &mut String) {
     let padding = "    ".repeat(indent);
     match stmt {
-        TaiExecStmt::Let { name, value } => {
+        TaiExecStmt::Let { name, value, .. } => {
             if let Some(value) = value {
                 out.push_str(&format!("{padding}let {} = {};\n", name, render_expr(value)));
             } else {
@@ -824,7 +892,7 @@ mod tests {
     fn parses_array_object_and_index_assignment() {
         let source = r#"
 .令 列表 = [1, 2, 3]
-.令 配置 = {"名称": "结衣", 启用: .真}
+.令 配置 = {"名称": "结衣", 启用: 真}
 列表[0] = 10
 .返回 配置["名称"]
 "#;
@@ -841,5 +909,36 @@ mod tests {
             .expect("expr render should succeed");
         assert!(rust.contains("BTreeMap::from"));
         assert!(rust.contains("\"名称\".to_string()"));
+    }
+
+    #[test]
+    fn parses_eyuyan_style_keywords_without_dot_prefix() {
+        let source = r#"
+令 名称 = "结衣"
+如果 名称 等于 "结衣"
+    返回 真
+否则
+    返回 假
+如果结束
+"#;
+        let statements = parse_native_tai_exec(source).expect("parse should succeed");
+        assert!(matches!(statements[0], TaiExecStmt::Let { .. }));
+        assert!(matches!(statements[1], TaiExecStmt::If { .. }));
+    }
+
+    #[test]
+    fn parses_typed_local_declaration() {
+        let source = r#"
+结果: 整数型 = 0
+.返回 结果
+"#;
+        let statements = parse_native_tai_exec(source).expect("parse should succeed");
+        match &statements[0] {
+            TaiExecStmt::Let { name, ty, .. } => {
+                assert_eq!(name, "结果");
+                assert_eq!(ty.as_deref(), Some("整数型"));
+            }
+            _ => panic!("expected typed local declaration"),
+        }
     }
 }

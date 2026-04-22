@@ -44,32 +44,32 @@ impl<'a> V3LineParser<'a> {
         };
 
         while let Some(line) = self.next_meaningful_line() {
-            if let Some(version) = line.strip_prefix(".版本 ") {
+            if let Some(version) = strip_keyword_prefix(&line, &[".版本", ".version"]) {
                 program.version = Some(version.trim().to_string());
                 continue;
             }
 
-            if let Some(target) = line.strip_prefix(".目标平台 ") {
+            if let Some(target) = strip_keyword_prefix(&line, &[".目标平台", ".target"]) {
                 program.target = Some(target.trim().to_string());
                 continue;
             }
 
-            if let Some(rest) = line.strip_prefix(".待定 ") {
+            if let Some(rest) = strip_keyword_prefix(&line, &[".待定", ".todo"]) {
                 program.unresolved.push(parse_unresolved_decl(rest, self.offset)?);
                 continue;
             }
 
-            if let Some(rest) = line.strip_prefix(".程序集 ") {
+            if let Some(rest) = strip_keyword_prefix(&line, &[".程序集", ".module"]) {
                 program.modules.push(self.parse_module(rest.trim())?);
                 continue;
             }
 
-            if let Some(rest) = line.strip_prefix(".元信息 ") {
+            if let Some(rest) = strip_keyword_prefix(&line, &[".元信息", ".meta"]) {
                 program.meta.push(parse_meta_decl(rest.trim(), self.offset)?);
                 continue;
             }
 
-            if let Some(rest) = line.strip_prefix(".常量 ") {
+            if let Some(rest) = strip_keyword_prefix(&line, &[".常量", ".const"]) {
                 program.meta.push(TaiMetaField {
                     key: "常量".to_string(),
                     value: rest.trim().to_string(),
@@ -77,7 +77,7 @@ impl<'a> V3LineParser<'a> {
                 continue;
             }
 
-            return Err(self.error_here("无法识别的顶层 .tai 声明"));
+                return Err(self.error_here("无法识别的顶层 .tai 声明"));
         }
 
         Ok(program)
@@ -92,32 +92,32 @@ impl<'a> V3LineParser<'a> {
         };
 
         while let Some(line) = self.peek_meaningful_line() {
-            if line.starts_with(".程序集 ")
-                || line.starts_with(".版本 ")
-                || line.starts_with(".目标平台 ")
-                || line.starts_with(".待定 ")
-                || line.starts_with(".元信息 ")
+            if starts_with_keyword(&line, &[".程序集", ".module"])
+                || starts_with_keyword(&line, &[".版本", ".version"])
+                || starts_with_keyword(&line, &[".目标平台", ".target"])
+                || starts_with_keyword(&line, &[".待定", ".todo"])
+                || starts_with_keyword(&line, &[".元信息", ".meta"])
             {
                 break;
             }
 
             let line = self.next_meaningful_line().expect("peeked line must exist");
-            if let Some(doc) = line.strip_prefix(".说明 ") {
+            if let Some(doc) = strip_keyword_prefix(&line, &[".说明", ".doc"]) {
                 module.doc = Some(parse_string_literal(doc.trim(), self.offset)?);
                 continue;
             }
 
-            if let Some(rest) = line.strip_prefix(".程序集变量 ") {
+            if let Some(rest) = strip_keyword_prefix(&line, &[".程序集变量", ".global"]) {
                 module.globals.push(parse_var_decl(rest.trim(), self.offset)?);
                 continue;
             }
 
-            if let Some(rest) = line.strip_prefix(".常量 ") {
+            if let Some(rest) = strip_keyword_prefix(&line, &[".常量", ".const"]) {
                 module.globals.push(parse_var_decl(rest.trim(), self.offset)?);
                 continue;
             }
 
-            if let Some(rest) = line.strip_prefix(".子程序 ") {
+            if let Some(rest) = strip_keyword_prefix(&line, &[".子程序", ".subprogram"]) {
                 module.functions.push(self.parse_function(rest.trim())?);
                 continue;
             }
@@ -129,12 +129,19 @@ impl<'a> V3LineParser<'a> {
     }
 
     fn parse_function(&mut self, header: &str) -> Result<TaiFunctionDecl, TaiParseError> {
-        let (name, return_type) = split_name_and_type(header);
+        let (name, params, return_type, slot3, slot4, binding) =
+            split_function_signature(header).map_err(|message| TaiParseError {
+                message,
+                offset: self.offset,
+            })?;
         let mut function = TaiFunctionDecl {
             name,
             return_type,
-            params: vec![],
-            param_decls: vec![],
+            slot3,
+            slot4,
+            binding,
+            params: params.iter().map(|decl| decl.name.clone()).collect(),
+            param_decls: params,
             locals: vec![],
             doc: None,
             validations: vec![],
@@ -150,14 +157,14 @@ impl<'a> V3LineParser<'a> {
                 break;
             }
 
-            if line.starts_with(".待定 ") {
+            if starts_with_keyword(&line, &[".待定", ".todo"]) {
                 break;
             }
 
             let line = self.next_meaningful_line().expect("peeked line must exist");
 
             if let Some((language, body)) = current_code.as_mut() {
-                if line == ".代码结束" {
+                if matches_keyword(&line, &[".代码结束", ".endcode"]) {
                     function.code_blocks.push(TaiCodeDecl {
                         language: language.clone(),
                         body: body.join("\n"),
@@ -169,36 +176,23 @@ impl<'a> V3LineParser<'a> {
                 continue;
             }
 
-            if let Some(rest) = line.strip_prefix(".参数 ") {
-                let decl = parse_var_decl(rest.trim(), self.offset)?;
-                function.params.push(decl.name.clone());
-                function.param_decls.push(decl);
-                continue;
+            if starts_with_keyword(&line, &[".参数", ".param", ".局部变量", ".local", ".常量", ".const"]) {
+                return Err(self.error_here("旧式分行参数/变量/常量声明已废弃，请改用新函数头和标准变量声明"));
             }
 
-            if let Some(rest) = line.strip_prefix(".局部变量 ") {
-                function.locals.push(parse_var_decl(rest.trim(), self.offset)?);
-                continue;
-            }
-
-            if let Some(rest) = line.strip_prefix(".常量 ") {
-                function.locals.push(parse_var_decl(rest.trim(), self.offset)?);
-                continue;
-            }
-
-            if let Some(doc) = line.strip_prefix(".说明 ") {
+            if let Some(doc) = strip_keyword_prefix(&line, &[".说明", ".doc"]) {
                 function.doc = Some(parse_string_literal(doc.trim(), self.offset)?);
                 continue;
             }
 
-            if let Some(validation) = line.strip_prefix(".校验 ") {
+            if let Some(validation) = strip_keyword_prefix(&line, &[".校验", ".validate"]) {
                 function
                     .validations
                     .push(parse_string_literal(validation.trim(), self.offset)?);
                 continue;
             }
 
-            if let Some(language) = line.strip_prefix(".代码 ") {
+            if let Some(language) = strip_keyword_prefix(&line, &[".代码", ".code"]) {
                 current_code = Some((language.trim().to_string(), Vec::new()));
                 continue;
             }
@@ -337,12 +331,122 @@ fn split_name_and_type(input: &str) -> (String, Option<String>) {
     (name, ty)
 }
 
+fn split_function_signature(
+    input: &str,
+) -> Result<
+    (
+        String,
+        Vec<TaiVarDecl>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ),
+    String,
+> {
+    if let Some((signature, tail)) = input.split_once("->") {
+        let (name, params) = parse_function_name_and_params(signature.trim())?;
+        let mut slots = tail
+            .split(',')
+            .map(|value| value.trim().to_string())
+            .collect::<Vec<_>>();
+        if slots.is_empty() {
+            return Err("子程序声明缺少返回类型".to_string());
+        }
+        while slots.len() < 4 {
+            slots.push(String::new());
+        }
+        if slots.len() > 4 {
+            return Err("子程序声明在返回类型后最多允许 3 个槽位".to_string());
+        }
+        let return_type = non_empty_string(&slots[0]);
+        let slot3 = non_empty_string(&slots[1]);
+        let slot4 = non_empty_string(&slots[2]);
+        let binding = non_empty_string(&slots[3]);
+        return Ok((name, params, return_type, slot3, slot4, binding));
+    }
+
+    Err("子程序声明必须使用新语法：.子程序 名称(参数) -> 返回类型, , , 绑定".to_string())
+}
+
+fn parse_function_name_and_params(input: &str) -> Result<(String, Vec<TaiVarDecl>), String> {
+    let trimmed = input.trim();
+    let Some(paren_start) = trimmed.find('(') else {
+        return Ok((trimmed.to_string(), Vec::new()));
+    };
+    let Some(paren_end) = trimmed.rfind(')') else {
+        return Err("子程序参数列表缺少 ')'".to_string());
+    };
+    if paren_end < paren_start {
+        return Err("子程序参数列表格式非法".to_string());
+    }
+    let name = trimmed[..paren_start].trim();
+    if name.is_empty() {
+        return Err("子程序缺少名称".to_string());
+    }
+    let inside = trimmed[paren_start + 1..paren_end].trim();
+    if trimmed[paren_end + 1..].trim().is_empty() == false {
+        return Err("子程序参数列表后存在无法识别的内容".to_string());
+    }
+    if inside.is_empty() {
+        return Ok((name.to_string(), Vec::new()));
+    }
+    let params = inside
+        .split(',')
+        .map(|item| parse_inline_param_decl(item.trim()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok((name.to_string(), params))
+}
+
+fn parse_inline_param_decl(input: &str) -> Result<TaiVarDecl, String> {
+    let Some((name, ty)) = input.split_once(':') else {
+        return Err(format!("参数 '{}' 缺少 ':' 类型声明", input));
+    };
+    let name = name.trim();
+    let ty = ty.trim();
+    if name.is_empty() {
+        return Err("参数缺少名称".to_string());
+    }
+    if ty.is_empty() {
+        return Err(format!("参数 '{}' 缺少类型", name));
+    }
+    Ok(TaiVarDecl {
+        name: name.to_string(),
+        ty: Some(ty.to_string()),
+        value: None,
+    })
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn is_function_boundary(line: &str) -> bool {
-    line.starts_with(".子程序 ")
-        || line.starts_with(".程序集 ")
-        || line.starts_with(".版本 ")
-        || line.starts_with(".目标平台 ")
-        || line.starts_with(".元信息 ")
+    starts_with_keyword(line, &[".子程序", ".subprogram"])
+        || starts_with_keyword(line, &[".程序集", ".module"])
+        || starts_with_keyword(line, &[".版本", ".version"])
+        || starts_with_keyword(line, &[".目标平台", ".target"])
+        || starts_with_keyword(line, &[".元信息", ".meta"])
+}
+
+fn strip_keyword_prefix<'a>(line: &'a str, keywords: &[&str]) -> Option<&'a str> {
+    keywords.iter().find_map(|keyword| {
+        line.strip_prefix(keyword)
+            .and_then(|rest| rest.strip_prefix(' '))
+    })
+}
+
+fn starts_with_keyword(line: &str, keywords: &[&str]) -> bool {
+    strip_keyword_prefix(line, keywords).is_some()
+}
+
+fn matches_keyword(line: &str, keywords: &[&str]) -> bool {
+    keywords.iter().any(|keyword| line == *keyword)
 }
 
 #[cfg(test)]
@@ -356,15 +460,12 @@ mod tests {
 .目标平台 视窗
 .程序集 登录模块
 
-.子程序 登录, 文本型
-.参数 邮箱, 文本型
-.参数 密码, 文本型
-.局部变量 结果, 文本型
+.子程序 登录(邮箱: 文本型, 密码: 文本型) -> 文本型, , ,
 .校验 "邮箱不能为空"
 .如果 邮箱 等于 ""
     .返回 "邮箱不能为空"
 .如果结束
-结果 = 邮箱
+结果: 文本型 = 邮箱
 .返回 结果
 
 .代码 Rust
@@ -380,7 +481,7 @@ println!("执行登录流程");
         assert_eq!(program.modules.len(), 1);
         assert_eq!(program.modules[0].functions.len(), 1);
         assert_eq!(program.modules[0].functions[0].params, vec!["邮箱", "密码"]);
-        assert_eq!(program.modules[0].functions[0].locals.len(), 1);
+        assert_eq!(program.modules[0].functions[0].locals.len(), 0);
         assert!(program.modules[0].functions[0].implementation.is_some());
         assert_eq!(program.modules[0].functions[0].code_blocks.len(), 1);
         assert_eq!(program.unresolved.len(), 1);
@@ -393,5 +494,42 @@ println!("执行登录流程");
         assert_eq!(program.version.as_deref(), Some("3"));
         assert_eq!(program.meta.len(), 1);
         assert_eq!(program.modules.len(), 1);
+    }
+
+    #[test]
+    fn parses_new_subprogram_signature_with_slots() {
+        let source = r#"
+.版本 2
+.程序集 窗口示例
+
+.子程序 启动程序(宽度: 整数型, 高度: 整数型) -> 整数型, , , 启动
+返回 0
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let function = &program.modules[0].functions[0];
+        assert_eq!(function.name, "启动程序");
+        assert_eq!(function.return_type.as_deref(), Some("整数型"));
+        assert_eq!(function.binding.as_deref(), Some("启动"));
+        assert_eq!(function.params, vec!["宽度", "高度"]);
+        assert_eq!(function.param_decls.len(), 2);
+        assert_eq!(function.slot3, None);
+        assert_eq!(function.slot4, None);
+    }
+
+    #[test]
+    fn parses_english_subprogram_signature_with_slots() {
+        let source = r#"
+.version 2
+.module window_demo
+
+.subprogram startup(width: int, height: int) -> int, , , startup
+return 0
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let function = &program.modules[0].functions[0];
+        assert_eq!(function.name, "startup");
+        assert_eq!(function.return_type.as_deref(), Some("int"));
+        assert_eq!(function.binding.as_deref(), Some("startup"));
+        assert_eq!(function.params, vec!["width", "height"]);
     }
 }

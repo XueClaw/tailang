@@ -61,8 +61,7 @@ func TestLoadNormalizedTaiAcceptsTaiInput(t *testing.T) {
 	input := `.版本 3
 .程序集 认证
 
-.子程序 登录, 文本型
-.参数 邮箱, 文本型
+ .子程序 登录(邮箱: 文本型) -> 文本型, , ,
 .返回 邮箱`
 
 	out, err := loadNormalizedTai("main.tai", input)
@@ -599,7 +598,7 @@ func TestCompileToExecutableFromTaiInputProducesExecutable(t *testing.T) {
 	content := `.版本 3
 .程序集 演示
 
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .返回 0`
 
 	if err := os.WriteFile(inputPath, []byte(content), 0644); err != nil {
@@ -644,7 +643,7 @@ func TestCompileToExecutableSupportsLlvmBackend(t *testing.T) {
 	ir := &IR{
 		Source: `.版本 3
 .程序集 演示
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .返回 0`,
 	}
 
@@ -666,7 +665,7 @@ func TestCompileToExecutableSupportsLlvmBackendWithStdout(t *testing.T) {
 	ir := &IR{
 		Source: `.版本 3
 .程序集 演示
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 .显示 "Hello World"
 .返回 0`,
 	}
@@ -689,11 +688,11 @@ func TestCompileToExecutableSupportsLlvmVoidReturnFlow(t *testing.T) {
 	ir := &IR{
 		Source: `.版本 3
 .程序集 演示
-.子程序 打招呼, 空
+.子程序 打招呼() -> 空, , ,
 .显示 "hi"
 .返回
 
-.子程序 主程序, 整数型
+.子程序 主程序() -> 整数型, , ,
 打招呼()
 .返回 0`,
 	}
