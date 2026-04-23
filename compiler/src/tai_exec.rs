@@ -69,6 +69,7 @@ enum TokenKind {
     Comma,
     Colon,
     Dot,
+    DotIdentifier(String),
     Assign,
     Equal,
     NotEqual,
@@ -188,7 +189,6 @@ impl<'a> TaiExecLexer<'a> {
     }
 
     fn lex_dot_prefixed_or_member(&mut self) -> Result<TokenKind, TaiExecError> {
-        let offset = self.index;
         self.bump();
         let Some(next) = self.peek() else { return Ok(TokenKind::Dot) };
         if !is_exec_identifier_start(next) { return Ok(TokenKind::Dot) }
@@ -243,7 +243,7 @@ impl<'a> TaiExecLexer<'a> {
         };
         match keyword {
             Some(keyword) => Ok(TokenKind::Keyword(keyword)),
-            None => Err(TaiExecError { message: format!("未知的点号执行关键字 '.{}'", ident), offset }),
+            None => Ok(TokenKind::DotIdentifier(ident)),
         }
     }
 
@@ -611,6 +611,10 @@ impl TaiExecParser {
                 expr = TaiExecExpr::Member { object: Box::new(expr), property };
                 continue;
             }
+            if let Some(property) = self.match_dot_identifier() {
+                expr = TaiExecExpr::Member { object: Box::new(expr), property };
+                continue;
+            }
             if self.match_token(|kind| matches!(kind, TokenKind::LeftBracket)) {
                 let index = self.parse_expression()?;
                 self.consume_token(|kind| matches!(kind, TokenKind::RightBracket), "下标表达式后缺少 ']'")?;
@@ -679,6 +683,9 @@ impl TaiExecParser {
     }
     fn match_identifier(&mut self) -> Option<String> {
         match &self.peek().kind { TokenKind::Identifier(v) => { let v=v.clone(); self.advance(); Some(v) }, _ => None }
+    }
+    fn match_dot_identifier(&mut self) -> Option<String> {
+        match &self.peek().kind { TokenKind::DotIdentifier(v) => { let v=v.clone(); self.advance(); Some(v) }, _ => None }
     }
     fn match_number(&mut self) -> Option<String> {
         match &self.peek().kind { TokenKind::Number(v) => { let v=v.clone(); self.advance(); Some(v) }, _ => None }
@@ -901,6 +908,19 @@ mod tests {
         assert!(matches!(statements[1], TaiExecStmt::Let { .. }));
         assert!(matches!(statements[2], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
         assert!(matches!(statements[3], TaiExecStmt::Return(Some(TaiExecExpr::Index { .. }))));
+    }
+
+    #[test]
+    fn parses_member_access_after_identifier() {
+        let source = r#"
+.令 配置 = {"名称": "结衣"}
+.返回 配置.名称
+"#;
+        let statements = parse_native_tai_exec(source).expect("parse should succeed");
+        let TaiExecStmt::Return(Some(TaiExecExpr::Member { property, .. })) = &statements[1] else {
+            panic!("expected return member access");
+        };
+        assert_eq!(property, "名称");
     }
 
     #[test]

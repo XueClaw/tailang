@@ -26,6 +26,7 @@ pub struct HirBinding {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HirStmt {
+    Noop,
     Let {
         name: String,
         ty: TaiType,
@@ -218,7 +219,18 @@ struct HirContext<'a> {
     params: Vec<HirBinding>,
     locals: Vec<HirBinding>,
     bindings: BTreeMap<String, TaiType>,
+    constant_bindings: BTreeMap<String, ConstValue>,
     signatures: &'a BTreeMap<String, FunctionSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConstValue {
+    Integer(i64),
+    Boolean(bool),
+    Text(String),
+    Null,
+    Array(Vec<ConstValue>),
+    Object(BTreeMap<String, ConstValue>),
 }
 
 impl<'a> HirContext<'a> {
@@ -249,6 +261,7 @@ impl<'a> HirContext<'a> {
             params: signature.params,
             locals,
             bindings,
+            constant_bindings: BTreeMap::new(),
             signatures,
         })
     }
@@ -260,6 +273,11 @@ impl<'a> HirContext<'a> {
     fn lower_stmt(&mut self, stmt: &TaiExecStmt) -> Result<HirStmt, String> {
         match stmt {
             TaiExecStmt::Let { name, ty, value } => {
+                let const_value = value
+                    .as_ref()
+                    .map(|expr| self.eval_const(expr))
+                    .transpose()?
+                    .flatten();
                 let lowered = value.as_ref().map(|expr| self.lower_expr(expr)).transpose()?;
                 let ty = self
                     .bindings
@@ -273,9 +291,18 @@ impl<'a> HirContext<'a> {
                             .flatten()
                     })
                     .or_else(|| lowered.as_ref().map(|expr| expr.ty.clone()))
+                    .or_else(|| const_value.as_ref().and_then(ConstValue::scalar_type))
                     .unwrap_or_else(|| TaiType::Integer);
                 if let Some(expr) = &lowered {
                     self.ensure_assignable(&ty, &expr.ty, &format!("变量 '{}'", name))?;
+                }
+                if let Some(value) = &const_value {
+                    self.constant_bindings.insert(name.clone(), value.clone());
+                    if value.is_collection() {
+                        return Ok(HirStmt::Noop);
+                    }
+                } else {
+                    self.constant_bindings.remove(name);
                 }
                 self.bindings.entry(name.clone()).or_insert_with(|| ty.clone());
                 if !self.locals.iter().any(|item| item.name == *name)
@@ -362,6 +389,15 @@ impl<'a> HirContext<'a> {
             }
             TaiExecStmt::Expr(TaiExecExpr::Assign { target, value }) => match target.as_ref() {
                 TaiExecExpr::Identifier(name) => {
+                    let const_value = self.eval_const(value)?;
+                    if let Some(value) = &const_value {
+                        self.constant_bindings.insert(name.clone(), value.clone());
+                        if value.is_collection() {
+                            return Ok(HirStmt::Noop);
+                        }
+                    } else {
+                        self.constant_bindings.remove(name);
+                    }
                     let slot_ty = self
                         .bindings
                         .get(name)
@@ -383,8 +419,21 @@ impl<'a> HirContext<'a> {
     }
 
     fn lower_expr(&mut self, expr: &TaiExecExpr) -> Result<HirExpr, String> {
+        if let Some(value) = self.eval_const(expr)? {
+            if let Some(expr) = Self::const_to_scalar_hir(&value) {
+                return Ok(expr);
+            }
+        }
         match expr {
             TaiExecExpr::Identifier(name) => {
+                if let Some(value) = self.constant_bindings.get(name) {
+                    if value.is_collection() {
+                        return Err(format!(
+                            "常量集合 '{}' 目前只能通过成员访问或下标访问读取",
+                            name
+                        ));
+                    }
+                }
                 let ty = self
                     .bindings
                     .get(name)
@@ -540,10 +589,212 @@ impl<'a> HirContext<'a> {
                 })
             }
             TaiExecExpr::Assign { .. } => Err("HIR 表达式中不支持嵌套赋值".to_string()),
-            TaiExecExpr::Array(_) => Err("当前 HIR 暂不支持数组".to_string()),
-            TaiExecExpr::Object(_) => Err("当前 HIR 暂不支持对象".to_string()),
-            TaiExecExpr::Member { .. } => Err("当前 HIR 暂不支持成员访问".to_string()),
-            TaiExecExpr::Index { .. } => Err("当前 HIR 暂不支持下标访问".to_string()),
+            TaiExecExpr::Array(_) => Err("当前数组值只能在可静态求值的上下文中使用".to_string()),
+            TaiExecExpr::Object(_) => Err("当前对象值只能在可静态求值的上下文中使用".to_string()),
+            TaiExecExpr::Member { .. } => Err("当前成员访问需要可静态求值的对象".to_string()),
+            TaiExecExpr::Index { .. } => Err("当前下标访问需要可静态求值的数组或对象".to_string()),
+        }
+    }
+
+    fn eval_const(&self, expr: &TaiExecExpr) -> Result<Option<ConstValue>, String> {
+        match expr {
+            TaiExecExpr::Identifier(name) => Ok(self.constant_bindings.get(name).cloned()),
+            TaiExecExpr::Number(value) => value
+                .parse::<i64>()
+                .map(ConstValue::Integer)
+                .map(Some)
+                .map_err(|_| format!("无法编译数字字面量 '{}'", value)),
+            TaiExecExpr::String(value) => Ok(Some(ConstValue::Text(value.clone()))),
+            TaiExecExpr::Bool(value) => Ok(Some(ConstValue::Boolean(*value))),
+            TaiExecExpr::Null => Ok(Some(ConstValue::Null)),
+            TaiExecExpr::Array(items) => {
+                let mut values = Vec::with_capacity(items.len());
+                for item in items {
+                    let Some(value) = self.eval_const(item)? else {
+                        return Ok(None);
+                    };
+                    values.push(value);
+                }
+                Ok(Some(ConstValue::Array(values)))
+            }
+            TaiExecExpr::Object(entries) => {
+                let mut values = BTreeMap::new();
+                for (key, value_expr) in entries {
+                    let Some(value) = self.eval_const(value_expr)? else {
+                        return Ok(None);
+                    };
+                    values.insert(key.clone(), value);
+                }
+                Ok(Some(ConstValue::Object(values)))
+            }
+            TaiExecExpr::Unary { op, right } => {
+                let Some(value) = self.eval_const(right)? else {
+                    return Ok(None);
+                };
+                match (op, value) {
+                    (crate::tai_exec::TaiExecUnaryOp::Not, ConstValue::Boolean(value)) => {
+                        Ok(Some(ConstValue::Boolean(!value)))
+                    }
+                    (crate::tai_exec::TaiExecUnaryOp::Negate, ConstValue::Integer(value)) => {
+                        Ok(Some(ConstValue::Integer(-value)))
+                    }
+                    (crate::tai_exec::TaiExecUnaryOp::Positive, ConstValue::Integer(value)) => {
+                        Ok(Some(ConstValue::Integer(value)))
+                    }
+                    _ => Ok(None),
+                }
+            }
+            TaiExecExpr::Binary { left, op, right } => {
+                let Some(left) = self.eval_const(left)? else {
+                    return Ok(None);
+                };
+                let Some(right) = self.eval_const(right)? else {
+                    return Ok(None);
+                };
+                Self::eval_const_binary(*op, left, right)
+            }
+            TaiExecExpr::Assign { .. } => Ok(None),
+            TaiExecExpr::Call { .. } => Ok(None),
+            TaiExecExpr::Member { object, property } => {
+                let Some(object) = self.eval_const(object)? else {
+                    return Ok(None);
+                };
+                match object {
+                    ConstValue::Object(entries) => Ok(entries.get(property).cloned()),
+                    _ => Ok(None),
+                }
+            }
+            TaiExecExpr::Index { object, index } => {
+                let Some(object) = self.eval_const(object)? else {
+                    return Ok(None);
+                };
+                let Some(index) = self.eval_const(index)? else {
+                    return Ok(None);
+                };
+                match (object, index) {
+                    (ConstValue::Array(items), ConstValue::Integer(index)) => {
+                        if index < 0 {
+                            return Ok(None);
+                        }
+                        Ok(items.get(index as usize).cloned())
+                    }
+                    (ConstValue::Object(entries), ConstValue::Text(key)) => {
+                        Ok(entries.get(&key).cloned())
+                    }
+                    _ => Ok(None),
+                }
+            }
+            TaiExecExpr::Grouping(inner) => self.eval_const(inner),
+        }
+    }
+
+    fn eval_const_binary(
+        op: crate::tai_exec::TaiExecBinaryOp,
+        left: ConstValue,
+        right: ConstValue,
+    ) -> Result<Option<ConstValue>, String> {
+        use crate::tai_exec::TaiExecBinaryOp as Op;
+        let result = match op {
+            Op::Or => match (left, right) {
+                (ConstValue::Boolean(left), ConstValue::Boolean(right)) => {
+                    Some(ConstValue::Boolean(left || right))
+                }
+                _ => None,
+            },
+            Op::And => match (left, right) {
+                (ConstValue::Boolean(left), ConstValue::Boolean(right)) => {
+                    Some(ConstValue::Boolean(left && right))
+                }
+                _ => None,
+            },
+            Op::Equal => Some(ConstValue::Boolean(left == right)),
+            Op::NotEqual => Some(ConstValue::Boolean(left != right)),
+            Op::Greater => match (left, right) {
+                (ConstValue::Integer(left), ConstValue::Integer(right)) => {
+                    Some(ConstValue::Boolean(left > right))
+                }
+                _ => None,
+            },
+            Op::GreaterEqual => match (left, right) {
+                (ConstValue::Integer(left), ConstValue::Integer(right)) => {
+                    Some(ConstValue::Boolean(left >= right))
+                }
+                _ => None,
+            },
+            Op::Less => match (left, right) {
+                (ConstValue::Integer(left), ConstValue::Integer(right)) => {
+                    Some(ConstValue::Boolean(left < right))
+                }
+                _ => None,
+            },
+            Op::LessEqual => match (left, right) {
+                (ConstValue::Integer(left), ConstValue::Integer(right)) => {
+                    Some(ConstValue::Boolean(left <= right))
+                }
+                _ => None,
+            },
+            Op::Add => match (left, right) {
+                (ConstValue::Integer(left), ConstValue::Integer(right)) => {
+                    Some(ConstValue::Integer(left + right))
+                }
+                (ConstValue::Text(left), ConstValue::Text(right)) => {
+                    Some(ConstValue::Text(format!("{}{}", left, right)))
+                }
+                _ => None,
+            },
+            Op::Subtract => match (left, right) {
+                (ConstValue::Integer(left), ConstValue::Integer(right)) => {
+                    Some(ConstValue::Integer(left - right))
+                }
+                _ => None,
+            },
+            Op::Multiply => match (left, right) {
+                (ConstValue::Integer(left), ConstValue::Integer(right)) => {
+                    Some(ConstValue::Integer(left * right))
+                }
+                _ => None,
+            },
+            Op::Divide => match (left, right) {
+                (ConstValue::Integer(_), ConstValue::Integer(0)) => {
+                    return Err("常量表达式中出现除以零".to_string())
+                }
+                (ConstValue::Integer(left), ConstValue::Integer(right)) => {
+                    Some(ConstValue::Integer(left / right))
+                }
+                _ => None,
+            },
+            Op::Modulo => match (left, right) {
+                (ConstValue::Integer(_), ConstValue::Integer(0)) => {
+                    return Err("常量表达式中出现模零".to_string())
+                }
+                (ConstValue::Integer(left), ConstValue::Integer(right)) => {
+                    Some(ConstValue::Integer(left % right))
+                }
+                _ => None,
+            },
+        };
+        Ok(result)
+    }
+
+    fn const_to_scalar_hir(value: &ConstValue) -> Option<HirExpr> {
+        match value {
+            ConstValue::Integer(value) => Some(HirExpr {
+                ty: TaiType::Integer,
+                kind: HirExprKind::Number(*value),
+            }),
+            ConstValue::Boolean(value) => Some(HirExpr {
+                ty: TaiType::Boolean,
+                kind: HirExprKind::Bool(*value),
+            }),
+            ConstValue::Text(value) => Some(HirExpr {
+                ty: TaiType::Text,
+                kind: HirExprKind::String(value.clone()),
+            }),
+            ConstValue::Null => Some(HirExpr {
+                ty: TaiType::Void,
+                kind: HirExprKind::Null,
+            }),
+            ConstValue::Array(_) | ConstValue::Object(_) => None,
         }
     }
 
@@ -564,6 +815,22 @@ impl<'a> HirContext<'a> {
 
     fn ensure_integer(&self, actual: &TaiType, context: &str) -> Result<(), String> {
         self.ensure_assignable(&TaiType::Integer, actual, context)
+    }
+}
+
+impl ConstValue {
+    fn scalar_type(&self) -> Option<TaiType> {
+        match self {
+            ConstValue::Integer(_) => Some(TaiType::Integer),
+            ConstValue::Boolean(_) => Some(TaiType::Boolean),
+            ConstValue::Text(_) => Some(TaiType::Text),
+            ConstValue::Null => Some(TaiType::Void),
+            ConstValue::Array(_) | ConstValue::Object(_) => None,
+        }
+    }
+
+    fn is_collection(&self) -> bool {
+        matches!(self, ConstValue::Array(_) | ConstValue::Object(_))
     }
 }
 
@@ -753,9 +1020,32 @@ mod tests {
             panic!("expected if statement");
         };
         assert_eq!(condition.ty, TaiType::Boolean);
-        match &condition.kind {
-            HirExprKind::Binary { op, .. } => assert_eq!(*op, HirBinaryOp::Equal),
-            _ => panic!("expected binary condition"),
-        }
+        assert!(matches!(condition.kind, HirExprKind::Bool(true)));
+    }
+
+    #[test]
+    fn folds_constant_object_member_and_array_index_access() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+数据 = {"名称": "结衣", "分数": [7, 9, 11]}
+.如果 数据.名称 等于 "结衣"
+    .返回 数据.分数[1]
+.否则
+    .返回 0
+.如果结束
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        assert!(matches!(hir.functions[0].body[0], HirStmt::Noop));
+        let HirStmt::If { condition, then_branch, .. } = &hir.functions[0].body[1] else {
+            panic!("expected if statement");
+        };
+        assert!(matches!(condition.kind, HirExprKind::Bool(true)));
+        let HirStmt::Return(Some(expr)) = &then_branch[0] else {
+            panic!("expected folded return");
+        };
+        assert!(matches!(expr.kind, HirExprKind::Number(9)));
     }
 }

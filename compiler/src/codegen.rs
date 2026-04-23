@@ -1383,4 +1383,21 @@ mod tests {
         let result = run_native_executable(source);
         assert_eq!(result.exit_code, 1);
     }
+
+    #[test]
+    fn runs_constant_collection_access_through_self_native_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+数据 = {"名称": "结衣", "分数": [3, 5, 8]}
+.如果 数据.名称 等于 "结衣"
+    .返回 数据.分数[2]
+.否则
+    .返回 0
+.如果结束
+"#;
+        let result = run_native_executable(source);
+        assert_eq!(result.exit_code, 8);
+    }
 }

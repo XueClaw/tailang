@@ -580,6 +580,7 @@ impl<'a> MirBuilder<'a> {
 
     fn lower_stmt(&mut self, stmt: &HirStmt) -> Result<(), String> {
         match stmt {
+            HirStmt::Noop => Ok(()),
             HirStmt::Let { name, value, .. } => {
                 let slot = self.allocate_named(name)?;
                 if let Some(value) = value {
@@ -1028,8 +1029,8 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序() -> 整数型, , ,
-.返回 1 + 2
+.子程序 主程序(输入: 整数型) -> 整数型, , ,
+.返回 输入 + 2
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
         let hir = lower_tai_to_hir(&program).expect("hir should succeed");
