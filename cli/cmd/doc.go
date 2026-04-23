@@ -20,7 +20,7 @@ var docCmd = &cobra.Command{
 Examples:
   meng doc              # Generate docs for current project
   meng doc src/         # Generate docs for directory
-  meng doc --format html  # Output as HTML`,
+  meng doc -o docs/api  # Write markdown docs to a custom directory`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		docPath := "."
@@ -471,6 +471,6 @@ func countFunctions(doc taiSchema) int {
 
 func init() {
 	rootCmd.AddCommand(docCmd)
-	docCmd.Flags().String("format", "markdown", "Output format (markdown, html, pdf)")
+	docCmd.Flags().String("format", "markdown", "Output format (currently only: markdown)")
 	docCmd.Flags().StringP("output", "o", "docs", "Output directory")
 }

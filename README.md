@@ -50,7 +50,7 @@ meng bench cli/bench_numeric.tai --report cli/bench_numeric.bench.json
 - 面向性能的 x64 后端
 - 真正使用 runtime 的输出路径
 - 数组/对象运行时
-- 用户函数调用
+- 成员访问 / 下标访问执行链
 - 多平台原生产物实现
 
 当前已新增的 benchmark 能力：
@@ -59,6 +59,7 @@ meng bench cli/bench_numeric.tai --report cli/bench_numeric.bench.json
 - 可运行生成的原生程序并采集耗时
 - 可运行对应 Python 基线并输出对比结果
 - 可写出 JSON benchmark 报告
+- `meng test` 已可构建并执行目标程序，并校验 stdout / 退出码
 
 详见：
 
@@ -91,4 +92,5 @@ Tailang 强制整个项目使用 UTF-8。
 
 - 旧 JSON `.tai` 快照仍可兼容读取，但不再是默认主线
 - GUI 当前是骨架状态，不是完整产品闭环
+- GUI 自带 `sample.tai` / `sample.meng` 样例入口用于演示流程
 - 文档只描述已实现能力，不再把过渡架构写成正式设计

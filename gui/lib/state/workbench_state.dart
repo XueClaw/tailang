@@ -35,6 +35,11 @@ class WorkbenchState extends ChangeNotifier {
     notifyListeners();
   }
 
+  void recordInfo(String message) {
+    _appendLog(message);
+    notifyListeners();
+  }
+
   Future<void> precompile() async {
     if (!hasSelection || currentSourceKind != SourceKind.meng) {
       _appendLog('Precompile requires a selected .meng file.');

@@ -1,12 +1,15 @@
 package cmd
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -76,9 +79,22 @@ Examples:
 	},
 }
 
-var expectedOutputPattern = regexp.MustCompile(`期望\s+输出\s+"([^"]+)"`)
-var quotedDoublePattern = regexp.MustCompile(`"([^"]+)"`)
-var quotedSinglePattern = regexp.MustCompile(`'([^']+)'`)
+var executeMengTestBuild = executeBuild
+var runMengTestExecutable = executeCompiledProgramForTest
+
+var expectedOutputPattern = regexp.MustCompile(`期望\s+输出\s+"([^"]*)"`)
+var expectedExitCodePattern = regexp.MustCompile(`期望\s+退出码\s+(-?\d+)`)
+
+type mengTestExpectations struct {
+	expectedOutputs []string
+	expectedExit    *int
+}
+
+type compiledProgramResult struct {
+	stdout   string
+	stderr   string
+	exitCode int
+}
 
 func runMengTestFile(testFile string) error {
 	content, err := os.ReadFile(testFile)
@@ -86,42 +102,133 @@ func runMengTestFile(testFile string) error {
 		return fmt.Errorf("read test file: %w", err)
 	}
 
-	expectedOutputs := parseExpectedOutputs(string(content))
-	if len(expectedOutputs) == 0 {
+	expectations, err := parseMengTestExpectations(string(content))
+	if err != nil {
+		return err
+	}
+	if len(expectations.expectedOutputs) == 0 && expectations.expectedExit == nil {
 		return fmt.Errorf("no supported assertions found")
 	}
 
-	targetFile, err := resolveTargetMengFile(testFile)
+	targetFile, err := resolveTargetSourceFile(testFile)
 	if err != nil {
 		return err
 	}
 
-	targetContent, err := os.ReadFile(targetFile)
+	tempDir, err := os.MkdirTemp("", "tailang-test-*")
 	if err != nil {
-		return fmt.Errorf("read target file: %w", err)
+		return fmt.Errorf("create temp test directory: %w", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	outputPath := filepath.Join(tempDir, defaultOutputName(targetFile, "windows"))
+	request, err := newBuildRequest(targetFile, outputPath, commandTargetForTests(), "self-native", "1")
+	if err != nil {
+		return err
+	}
+	if err := executeMengTestBuild(request); err != nil {
+		return fmt.Errorf("build target: %w", err)
 	}
 
-	taiSource := string(targetContent)
-	trimmedTai := strings.TrimSpace(taiSource)
-	if !looksLikeLegacyTaiJSON(trimmedTai) && !isTextualTaiSource(trimmedTai) && !strings.HasSuffix(strings.ToLower(targetFile), ".tai") {
-		taiSource, err = precompileMeng(taiSource)
-		if err != nil {
-			return fmt.Errorf("precompile target: %w", err)
-		}
-	}
-
-	actualOutputs, err := collectOutputsFromTai(taiSource)
+	result, err := runMengTestExecutable(request.outputName)
 	if err != nil {
 		return err
 	}
 
-	for _, expected := range expectedOutputs {
-		if _, ok := actualOutputs[expected]; !ok {
-			return fmt.Errorf("expected output %q not found in target flow", expected)
-		}
+	if err := assertExpectedOutputs(expectations.expectedOutputs, result.stdout); err != nil {
+		return err
+	}
+	if expectations.expectedExit != nil && result.exitCode != *expectations.expectedExit {
+		return fmt.Errorf("expected exit code %d, got %d", *expectations.expectedExit, result.exitCode)
 	}
 
 	return nil
+}
+
+func parseMengTestExpectations(content string) (mengTestExpectations, error) {
+	expectations := mengTestExpectations{
+		expectedOutputs: parseExpectedOutputs(content),
+	}
+
+	exitMatches := expectedExitCodePattern.FindAllStringSubmatch(content, -1)
+	if len(exitMatches) > 0 {
+		value := exitMatches[len(exitMatches)-1][1]
+		exitCode, err := strconv.Atoi(value)
+		if err != nil {
+			return mengTestExpectations{}, fmt.Errorf("invalid expected exit code %q: %w", value, err)
+		}
+		expectations.expectedExit = &exitCode
+	}
+
+	return expectations, nil
+}
+
+func commandTargetForTests() string {
+	if runtime.GOOS == "windows" {
+		return "windows"
+	}
+	return runtime.GOOS
+}
+
+func executeCompiledProgramForTest(programPath string) (compiledProgramResult, error) {
+	cmd := exec.Command(programPath)
+	output, err := cmd.CombinedOutput()
+	exitCode := 0
+	if cmd.ProcessState != nil {
+		exitCode = cmd.ProcessState.ExitCode()
+	}
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return compiledProgramResult{}, fmt.Errorf("run compiled test target: %w", err)
+		}
+	}
+
+	return compiledProgramResult{
+		stdout:   normalizeOutput(string(output)),
+		stderr:   "",
+		exitCode: exitCode,
+	}, nil
+}
+
+func assertExpectedOutputs(expectedOutputs []string, stdout string) error {
+	if len(expectedOutputs) == 0 {
+		return nil
+	}
+
+	actualLines := nonEmptyLines(stdout)
+	searchFrom := 0
+	for _, expected := range expectedOutputs {
+		found := false
+		for i := searchFrom; i < len(actualLines); i++ {
+			if actualLines[i] == expected {
+				searchFrom = i + 1
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("expected output line %q not found in program stdout %q", expected, stdout)
+		}
+	}
+	return nil
+}
+
+func normalizeOutput(output string) string {
+	return strings.ReplaceAll(output, "\r\n", "\n")
+}
+
+func nonEmptyLines(output string) []string {
+	normalized := normalizeOutput(output)
+	lines := strings.Split(normalized, "\n")
+	result := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			result = append(result, trimmed)
+		}
+	}
+	return result
 }
 
 func parseExpectedOutputs(content string) []string {
@@ -135,11 +242,13 @@ func parseExpectedOutputs(content string) []string {
 	return outputs
 }
 
-func resolveTargetMengFile(testFile string) (string, error) {
+func resolveTargetSourceFile(testFile string) (string, error) {
 	base := filepath.Base(testFile)
 	dir := filepath.Dir(testFile)
 
 	candidates := []string{
+		strings.TrimSuffix(base, "_test.meng") + ".tai",
+		strings.TrimSuffix(base, ".test.meng") + ".tai",
 		strings.TrimSuffix(base, "_test.meng") + ".meng",
 		strings.TrimSuffix(base, ".test.meng") + ".meng",
 	}
@@ -159,46 +268,7 @@ func resolveTargetMengFile(testFile string) (string, error) {
 		}
 	}
 
-	return "", fmt.Errorf("unable to resolve target .meng file")
-}
-
-func collectOutputsFromTai(taiSource string) (map[string]struct{}, error) {
-	outputs := map[string]struct{}{}
-	if looksLikeLegacyTaiJSON(strings.TrimSpace(taiSource)) {
-		var doc taiSchema
-		if err := json.Unmarshal([]byte(taiSource), &doc); err != nil {
-			return nil, fmt.Errorf("invalid .tai JSON: %w", err)
-		}
-
-		for _, module := range doc.Modules {
-			collectQuotedStrings(module.Description, outputs)
-			for _, fn := range module.Functions {
-				collectQuotedStrings(fn.Description, outputs)
-				for _, validation := range fn.Validations {
-					collectQuotedStrings(validation, outputs)
-				}
-			}
-		}
-
-		for _, block := range doc.CodeBlocks {
-			collectQuotedStrings(block.Code, outputs)
-		}
-		return outputs, nil
-	}
-
-	collectQuotedStrings(taiSource, outputs)
-	return outputs, nil
-}
-
-func collectQuotedStrings(input string, outputs map[string]struct{}) {
-	for _, pattern := range []*regexp.Regexp{quotedDoublePattern, quotedSinglePattern} {
-		matches := pattern.FindAllStringSubmatch(input, -1)
-		for _, match := range matches {
-			if len(match) > 1 && strings.TrimSpace(match[1]) != "" {
-				outputs[match[1]] = struct{}{}
-			}
-		}
-	}
+	return "", fmt.Errorf("unable to resolve target .tai or .meng file")
 }
 
 func init() {

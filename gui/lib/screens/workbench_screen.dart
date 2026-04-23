@@ -19,7 +19,9 @@ class WorkbenchScreen extends StatelessWidget {
     final file = File(path.join(cwd, fileName));
     if (await file.exists()) {
       state.openPath(file.path, kind);
+      return;
     }
+    state.recordInfo('Sample file not found: $fileName');
   }
 
   @override

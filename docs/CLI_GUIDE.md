@@ -45,7 +45,7 @@ Current behavior:
 - `.tai` is the formal compiler input
 - compiler backend is native
 - currently supported native output target: Windows x64
-- current native executable subset supports `.返回` and `.显示 "文本"`
+- current native executable subset includes returns, conditionals, loops, `match`, text comparison, and user function calls
 
 ### `meng run`
 
@@ -92,8 +92,11 @@ Run Tailang project tests.
 Current behavior:
 
 - command exists
-- current execution model is still simplified
-- not yet a full semantic test runtime for `.tai`
+- discovers `*_test.meng` / `.test.meng` test specs
+- resolves matching `.tai` first, then `.meng` source
+- builds the target program and executes the produced artifact
+- supports `期望 输出 "..."` stdout line assertions
+- supports `期望 退出码 N` exit-code assertions
 
 ## UTF-8 Policy
 
