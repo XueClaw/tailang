@@ -924,6 +924,18 @@ mod tests {
     }
 
     #[test]
+    fn parses_member_and_nested_index_assignment() {
+        let source = r#"
+.令 数据 = {"名称": "结衣", "分数": [3, 5, 8]}
+数据.名称 = "真结衣"
+数据["分数"][1] = 13
+"#;
+        let statements = parse_native_tai_exec(source).expect("parse should succeed");
+        assert!(matches!(statements[1], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
+        assert!(matches!(statements[2], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
+    }
+
+    #[test]
     fn renders_native_expr_to_rust() {
         let rust = render_native_tai_expr_to_rust(r#"{"名称": "结衣", "年龄": 1}"#)
             .expect("expr render should succeed");

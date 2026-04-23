@@ -1120,4 +1120,23 @@ mod tests {
         let result = compile_and_run(source, "const_collection_access");
         assert_eq!(result.exit_code, 11);
     }
+
+    #[test]
+    fn runs_constant_collection_assignment_through_llvm_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+数据 = {"名称": "结衣", "分数": [3, 5, 8]}
+数据.名称 = "真结衣"
+数据["分数"][1] = 13
+.如果 数据.名称 等于 "真结衣"
+    .返回 数据.分数[1]
+.否则
+    .返回 0
+.如果结束
+"#;
+        let result = compile_and_run(source, "const_collection_assignment");
+        assert_eq!(result.exit_code, 13);
+    }
 }

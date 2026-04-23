@@ -233,6 +233,12 @@ enum ConstValue {
     Object(BTreeMap<String, ConstValue>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ConstPathSegment {
+    Member(String),
+    Index(ConstValue),
+}
+
 impl<'a> HirContext<'a> {
     fn for_function(
         function: &TaiFunctionDecl,
@@ -410,7 +416,17 @@ impl<'a> HirContext<'a> {
                         value,
                     })
                 }
-                _ => Err("当前 HIR 只支持标识符赋值".to_string()),
+                TaiExecExpr::Member { .. } | TaiExecExpr::Index { .. } => {
+                    let const_value = self
+                        .eval_const(value)?
+                        .ok_or_else(|| "当前集合赋值需要可静态求值的右值".to_string())?;
+                    if self.apply_const_target_assignment(target.as_ref(), const_value)? {
+                        Ok(HirStmt::Noop)
+                    } else {
+                        Err("当前集合赋值需要可静态求值的集合目标".to_string())
+                    }
+                }
+                _ => Err("当前 HIR 只支持标识符、成员或下标赋值".to_string()),
             },
             TaiExecStmt::Break => Ok(HirStmt::Break),
             TaiExecStmt::Continue => Ok(HirStmt::Continue),
@@ -798,6 +814,114 @@ impl<'a> HirContext<'a> {
         }
     }
 
+    fn apply_const_target_assignment(
+        &mut self,
+        target: &TaiExecExpr,
+        value: ConstValue,
+    ) -> Result<bool, String> {
+        let (root_name, path) = self
+            .decompose_const_target(target)?
+            .ok_or_else(|| "当前集合赋值需要可静态求值的成员或下标路径".to_string())?;
+        let Some(root_value) = self.constant_bindings.get(&root_name).cloned() else {
+            return Ok(false);
+        };
+        let Some(updated_root) = Self::assign_const_path(&root_value, &path, value)? else {
+            return Ok(false);
+        };
+        self.constant_bindings.insert(root_name, updated_root);
+        Ok(true)
+    }
+
+    fn decompose_const_target(
+        &self,
+        target: &TaiExecExpr,
+    ) -> Result<Option<(String, Vec<ConstPathSegment>)>, String> {
+        match target {
+            TaiExecExpr::Identifier(name) => Ok(Some((name.clone(), Vec::new()))),
+            TaiExecExpr::Member { object, property } => {
+                let Some((root, mut path)) = self.decompose_const_target(object)? else {
+                    return Ok(None);
+                };
+                path.push(ConstPathSegment::Member(property.clone()));
+                Ok(Some((root, path)))
+            }
+            TaiExecExpr::Index { object, index } => {
+                let Some((root, mut path)) = self.decompose_const_target(object)? else {
+                    return Ok(None);
+                };
+                let Some(index_value) = self.eval_const(index)? else {
+                    return Ok(None);
+                };
+                path.push(ConstPathSegment::Index(index_value));
+                Ok(Some((root, path)))
+            }
+            _ => Ok(None),
+        }
+    }
+
+    fn assign_const_path(
+        current: &ConstValue,
+        path: &[ConstPathSegment],
+        incoming: ConstValue,
+    ) -> Result<Option<ConstValue>, String> {
+        if path.is_empty() {
+            return Ok(Some(incoming));
+        }
+
+        match (&path[0], current) {
+            (ConstPathSegment::Member(property), ConstValue::Object(entries)) => {
+                let mut updated = entries.clone();
+                if path.len() == 1 {
+                    updated.insert(property.clone(), incoming);
+                    return Ok(Some(ConstValue::Object(updated)));
+                }
+                let Some(child) = entries.get(property) else {
+                    return Ok(None);
+                };
+                let Some(next_child) = Self::assign_const_path(child, &path[1..], incoming)? else {
+                    return Ok(None);
+                };
+                updated.insert(property.clone(), next_child);
+                Ok(Some(ConstValue::Object(updated)))
+            }
+            (ConstPathSegment::Index(ConstValue::Integer(index)), ConstValue::Array(items)) => {
+                if *index < 0 {
+                    return Ok(None);
+                }
+                let index = *index as usize;
+                if index >= items.len() {
+                    return Ok(None);
+                }
+                let mut updated = items.clone();
+                if path.len() == 1 {
+                    updated[index] = incoming;
+                    return Ok(Some(ConstValue::Array(updated)));
+                }
+                let Some(next_child) = Self::assign_const_path(&items[index], &path[1..], incoming)? else {
+                    return Ok(None);
+                };
+                updated[index] = next_child;
+                Ok(Some(ConstValue::Array(updated)))
+            }
+            (ConstPathSegment::Index(ConstValue::Text(key)), ConstValue::Object(entries)) => {
+                let mut updated = entries.clone();
+                if path.len() == 1 {
+                    updated.insert(key.clone(), incoming);
+                    return Ok(Some(ConstValue::Object(updated)));
+                }
+                let Some(child) = entries.get(key) else {
+                    return Ok(None);
+                };
+                let Some(next_child) = Self::assign_const_path(child, &path[1..], incoming)? else {
+                    return Ok(None);
+                };
+                updated.insert(key.clone(), next_child);
+                Ok(Some(ConstValue::Object(updated)))
+            }
+            (ConstPathSegment::Index(_), _) | (ConstPathSegment::Member(_), _) => Ok(None),
+        }
+    }
+
     fn ensure_assignable(&self, expected: &TaiType, actual: &TaiType, context: &str) -> Result<(), String> {
         if expected == actual {
             Ok(())
@@ -1047,5 +1171,35 @@ mod tests {
             panic!("expected folded return");
         };
         assert!(matches!(expr.kind, HirExprKind::Number(9)));
+    }
+
+    #[test]
+    fn folds_constant_collection_assignment_and_followup_access() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+数据 = {"名称": "结衣", "分数": [3, 5, 8]}
+数据.名称 = "真结衣"
+数据["分数"][1] = 13
+.如果 数据.名称 等于 "真结衣"
+    .返回 数据.分数[1]
+.否则
+    .返回 0
+.如果结束
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        assert!(matches!(hir.functions[0].body[0], HirStmt::Noop));
+        assert!(matches!(hir.functions[0].body[1], HirStmt::Noop));
+        assert!(matches!(hir.functions[0].body[2], HirStmt::Noop));
+        let HirStmt::If { condition, then_branch, .. } = &hir.functions[0].body[3] else {
+            panic!("expected if statement");
+        };
+        assert!(matches!(condition.kind, HirExprKind::Bool(true)));
+        let HirStmt::Return(Some(expr)) = &then_branch[0] else {
+            panic!("expected folded return");
+        };
+        assert!(matches!(expr.kind, HirExprKind::Number(13)));
     }
 }
