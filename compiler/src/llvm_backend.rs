@@ -169,6 +169,31 @@ fn render_llvm_module(program: &MirProgram) -> Result<String, String> {
     out.push_str("declare ptr @GetStdHandle(i32)\n");
     out.push_str("declare i32 @WriteFile(ptr, ptr, i32, ptr, ptr)\n");
     out.push_str("declare i32 @wsprintfA(ptr, ptr, ...)\n\n");
+    out.push_str(
+        "define i64 @tailang_array_get_i64(ptr %array, i64 %index) {\n\
+entry:\n\
+  %is_null = icmp eq ptr %array, null\n\
+  br i1 %is_null, label %default, label %check_non_negative\n\
+\n\
+check_non_negative:\n\
+  %index_non_negative = icmp sge i64 %index, 0\n\
+  br i1 %index_non_negative, label %check_upper_bound, label %default\n\
+\n\
+check_upper_bound:\n\
+  %len = load i64, ptr %array, align 8\n\
+  %in_bounds = icmp slt i64 %index, %len\n\
+  br i1 %in_bounds, label %load_value, label %default\n\
+\n\
+load_value:\n\
+  %offset = add i64 %index, 1\n\
+  %element_ptr = getelementptr inbounds i64, ptr %array, i64 %offset\n\
+  %value = load i64, ptr %element_ptr, align 8\n\
+  ret i64 %value\n\
+\n\
+default:\n\
+  ret i64 0\n\
+}\n\n"
+    );
 
     for function in &program.functions {
         let mut renderer = FunctionRenderer::new(function, &string_lengths);
@@ -188,7 +213,9 @@ fn render_llvm_module(program: &MirProgram) -> Result<String, String> {
             out.push_str("  %entry_result_i32 = zext i1 %entry_result to i32\n");
             out.push_str("  %exit_code = add i32 %entry_result_i32, 0\n");
         }
-        TaiType::Text | TaiType::Void => out.push_str("  %exit_code = add i32 0, 0\n"),
+        TaiType::Text | TaiType::Array(_) | TaiType::Void => {
+            out.push_str("  %exit_code = add i32 0, 0\n")
+        }
     }
     out.push_str("  ret i32 %exit_code\n");
     out.push_str("}\n");
@@ -328,6 +355,13 @@ impl<'a> FunctionRenderer<'a> {
                         llvm_storage_align(self.slot_type(*target)?)
                     ));
                 }
+                TaiType::Array(_) => {
+                    out.push_str(&format!(
+                        "  store ptr null, ptr %slot{}, align {}\n",
+                        target,
+                        llvm_storage_align(self.slot_type(*target)?)
+                    ));
+                }
             },
             MirInstruction::ConstString { target, string_id } => {
                 let len = self
@@ -346,6 +380,85 @@ impl<'a> FunctionRenderer<'a> {
                     target,
                     llvm_storage_align(&TaiType::Text)
                 ));
+            }
+            MirInstruction::ArrayNew {
+                target,
+                element_type,
+                elements,
+            } => {
+                let total = elements.len() + 1;
+                let storage = self.next_reg();
+                out.push_str(&format!("  {} = alloca [{} x i64], align 8\n", storage, total));
+                let base = self.next_reg();
+                out.push_str(&format!(
+                    "  {} = getelementptr inbounds [{} x i64], ptr {}, i64 0, i64 0\n",
+                    base, total, storage
+                ));
+                out.push_str(&format!("  store i64 {}, ptr {}, align 8\n", elements.len(), base));
+                for (index, slot) in elements.iter().enumerate() {
+                    let encoded = self.encode_slot_to_i64(*slot, element_type, out)?;
+                    let element_ptr = self.next_reg();
+                    out.push_str(&format!(
+                        "  {} = getelementptr inbounds i64, ptr {}, i64 {}\n",
+                        element_ptr,
+                        base,
+                        index + 1
+                    ));
+                    out.push_str(&format!("  store i64 {}, ptr {}, align 8\n", encoded, element_ptr));
+                }
+                out.push_str(&format!(
+                    "  store ptr {}, ptr %slot{}, align {}\n",
+                    base,
+                    target,
+                    llvm_storage_align(self.slot_type(*target)?)
+                ));
+            }
+            MirInstruction::ArrayGet {
+                target,
+                array,
+                index,
+                element_type,
+            } => {
+                let array_ptr = self.load_slot(*array, &TaiType::Array(Box::new(element_type.clone())), out);
+                let index_value = self.load_slot(*index, &TaiType::Integer, out);
+                let raw = self.next_reg();
+                out.push_str(&format!(
+                    "  {} = call i64 @tailang_array_get_i64(ptr {}, i64 {})\n",
+                    raw, array_ptr, index_value
+                ));
+                match element_type {
+                    TaiType::Integer => {
+                        out.push_str(&format!(
+                            "  store i64 {}, ptr %slot{}, align {}\n",
+                            raw,
+                            target,
+                            llvm_storage_align(element_type)
+                        ));
+                    }
+                    TaiType::Boolean => {
+                        let flag = self.next_reg();
+                        out.push_str(&format!("  {} = trunc i64 {} to i1\n", flag, raw));
+                        out.push_str(&format!(
+                            "  store i1 {}, ptr %slot{}, align {}\n",
+                            flag,
+                            target,
+                            llvm_storage_align(element_type)
+                        ));
+                    }
+                    TaiType::Text => {
+                        let ptr_value = self.next_reg();
+                        out.push_str(&format!("  {} = inttoptr i64 {} to ptr\n", ptr_value, raw));
+                        out.push_str(&format!(
+                            "  store ptr {}, ptr %slot{}, align {}\n",
+                            ptr_value,
+                            target,
+                            llvm_storage_align(element_type)
+                        ));
+                    }
+                    TaiType::Array(_) | TaiType::Void => {
+                        return Err("LLVM 后端暂不支持该数组元素类型".to_string());
+                    }
+                }
             }
             MirInstruction::Copy { target, source } => {
                 let source_ty = self.slot_type(*source)?.clone();
@@ -435,6 +548,10 @@ impl<'a> FunctionRenderer<'a> {
                     }
                     TaiType::Text => {
                         let value = self.load_slot(*slot, &TaiType::Text, out);
+                        out.push_str(&format!("  ret ptr {}\n", value));
+                    }
+                    TaiType::Array(inner) => {
+                        let value = self.load_slot(*slot, &TaiType::Array(inner), out);
                         out.push_str(&format!("  ret ptr {}\n", value));
                     }
                     TaiType::Void => {
@@ -630,9 +747,38 @@ impl<'a> FunctionRenderer<'a> {
                 out.push_str(&format!("  {} = zext i1 {} to i64\n", int_value, flag));
                 self.emit_formatted_integer_write(&int_value, out);
             }
+            TaiType::Array(_) => {
+                return Err("LLVM 后端暂不支持直接打印数组".to_string());
+            }
             TaiType::Void => {}
         }
         Ok(())
+    }
+
+    fn encode_slot_to_i64(
+        &mut self,
+        slot: usize,
+        ty: &TaiType,
+        out: &mut String,
+    ) -> Result<String, String> {
+        match ty {
+            TaiType::Integer => Ok(self.load_slot(slot, ty, out)),
+            TaiType::Boolean => {
+                let value = self.load_slot(slot, ty, out);
+                let encoded = self.next_reg();
+                out.push_str(&format!("  {} = zext i1 {} to i64\n", encoded, value));
+                Ok(encoded)
+            }
+            TaiType::Text => {
+                let value = self.load_slot(slot, ty, out);
+                let encoded = self.next_reg();
+                out.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", encoded, value));
+                Ok(encoded)
+            }
+            TaiType::Array(_) | TaiType::Void => {
+                Err("LLVM 后端暂不支持该数组元素类型".to_string())
+            }
+        }
     }
 
     fn emit_formatted_integer_write(&mut self, int_value: &str, out: &mut String) {
@@ -833,6 +979,7 @@ fn llvm_type(ty: &TaiType) -> &'static str {
         TaiType::Integer => "i64",
         TaiType::Boolean => "i1",
         TaiType::Text => "ptr",
+        TaiType::Array(_) => "ptr",
         TaiType::Void => "i64",
     }
 }
@@ -856,7 +1003,7 @@ fn llvm_storage_type(ty: &TaiType) -> &'static str {
 fn llvm_storage_align(ty: &TaiType) -> u32 {
     match ty {
         TaiType::Boolean => 1,
-        TaiType::Integer | TaiType::Text | TaiType::Void => 8,
+        TaiType::Integer | TaiType::Text | TaiType::Array(_) | TaiType::Void => 8,
     }
 }
 
@@ -1138,5 +1285,21 @@ mod tests {
 "#;
         let result = compile_and_run(source, "const_collection_assignment");
         assert_eq!(result.exit_code, 13);
+    }
+
+    #[test]
+    fn runs_runtime_array_index_through_llvm_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 读取(索引: 整数型) -> 整数型, , ,
+数据: 整数型[] = [3, 5, 8]
+.返回 数据[索引]
+
+.子程序 主程序() -> 整数型, , ,
+.返回 读取(1)
+"#;
+        let result = compile_and_run(source, "runtime_array_index");
+        assert_eq!(result.exit_code, 5);
     }
 }

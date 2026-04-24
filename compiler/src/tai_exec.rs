@@ -375,7 +375,11 @@ impl TaiExecParser {
     fn parse_typed_local_decl(&mut self) -> Result<TaiExecStmt, TaiExecError> {
         let name = self.consume_identifier("需要变量名")?;
         self.consume_token(|kind| matches!(kind, TokenKind::Colon), "变量声明缺少 ':'")?;
-        let ty = self.consume_identifier("变量声明缺少类型")?;
+        let mut ty = self.consume_identifier("变量声明缺少类型")?;
+        while self.match_token(|kind| matches!(kind, TokenKind::LeftBracket)) {
+            self.consume_token(|kind| matches!(kind, TokenKind::RightBracket), "数组类型缺少 ']'")?;
+            ty.push_str("[]");
+        }
         let value = if self.match_token(|kind| matches!(kind, TokenKind::Assign)) {
             Some(self.parse_expression()?)
         } else {
@@ -933,6 +937,18 @@ mod tests {
         let statements = parse_native_tai_exec(source).expect("parse should succeed");
         assert!(matches!(statements[1], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
         assert!(matches!(statements[2], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
+    }
+
+    #[test]
+    fn parses_typed_array_local_declaration() {
+        let source = r#"
+数据: 整数型[] = [3, 5, 8]
+"#;
+        let statements = parse_native_tai_exec(source).expect("parse should succeed");
+        let TaiExecStmt::Let { ty: Some(ty), .. } = &statements[0] else {
+            panic!("expected typed local declaration");
+        };
+        assert_eq!(ty, "整数型[]");
     }
 
     #[test]

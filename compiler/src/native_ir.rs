@@ -63,6 +63,17 @@ pub enum MirInstruction {
         target: usize,
         string_id: usize,
     },
+    ArrayNew {
+        target: usize,
+        element_type: TaiType,
+        elements: Vec<usize>,
+    },
+    ArrayGet {
+        target: usize,
+        array: usize,
+        index: usize,
+        element_type: TaiType,
+    },
     Copy {
         target: usize,
         source: usize,
@@ -237,6 +248,11 @@ fn constant_fold_and_branch_simplify(mut function: MirFunction) -> MirFunction {
                     optimized.push(inst.clone());
                 }
                 MirInstruction::ConstString { target, .. } => {
+                    known.remove(target);
+                    optimized.push(inst.clone());
+                }
+                MirInstruction::ArrayNew { target, .. }
+                | MirInstruction::ArrayGet { target, .. } => {
                     known.remove(target);
                     optimized.push(inst.clone());
                 }
@@ -775,6 +791,35 @@ impl<'a> MirBuilder<'a> {
                 });
                 Ok(slot)
             }
+            HirExprKind::ArrayLiteral { elements } => {
+                let mut lowered = Vec::with_capacity(elements.len());
+                for element in elements {
+                    lowered.push(self.lower_expr(element)?);
+                }
+                let element_type = match &expr.ty {
+                    TaiType::Array(inner) => inner.as_ref().clone(),
+                    _ => return Err("MIR lowering failed: array literal missing array type".to_string()),
+                };
+                let target = self.allocate_temp(expr.ty.clone());
+                self.emit(MirInstruction::ArrayNew {
+                    target,
+                    element_type,
+                    elements: lowered,
+                });
+                Ok(target)
+            }
+            HirExprKind::ArrayIndex { array, index } => {
+                let array_slot = self.lower_expr(array)?;
+                let index_slot = self.lower_expr(index)?;
+                let target = self.allocate_temp(expr.ty.clone());
+                self.emit(MirInstruction::ArrayGet {
+                    target,
+                    array: array_slot,
+                    index: index_slot,
+                    element_type: expr.ty.clone(),
+                });
+                Ok(target)
+            }
             HirExprKind::Bool(value) => {
                 let slot = self.allocate_temp(TaiType::Boolean);
                 self.emit(MirInstruction::ConstBool {
@@ -1047,5 +1092,26 @@ mod tests {
             .iter()
             .flat_map(|block| block.instructions.iter())
             .any(|inst| matches!(inst, MirInstruction::Binary { .. })));
+    }
+
+    #[test]
+    fn lowers_runtime_array_index_to_mir() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序(索引: 整数型) -> 整数型, , ,
+数据: 整数型[] = [3, 5, 8]
+.返回 数据[索引]
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should succeed");
+        let mir = lower_hir_to_mir(&hir).expect("mir should succeed");
+        let instructions = mir.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .collect::<Vec<_>>();
+        assert!(instructions.iter().any(|inst| matches!(inst, MirInstruction::ArrayNew { .. })));
+        assert!(instructions.iter().any(|inst| matches!(inst, MirInstruction::ArrayGet { .. })));
     }
 }

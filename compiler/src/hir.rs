@@ -70,6 +70,13 @@ pub enum HirExprKind {
     String(String),
     Bool(bool),
     Null,
+    ArrayLiteral {
+        elements: Vec<HirExpr>,
+    },
+    ArrayIndex {
+        array: Box<HirExpr>,
+        index: Box<HirExpr>,
+    },
     Call {
         callee: String,
         arguments: Vec<HirExpr>,
@@ -304,7 +311,7 @@ impl<'a> HirContext<'a> {
                 }
                 if let Some(value) = &const_value {
                     self.constant_bindings.insert(name.clone(), value.clone());
-                    if value.is_collection() {
+                    if matches!(value, ConstValue::Object(_)) {
                         return Ok(HirStmt::Noop);
                     }
                 } else {
@@ -443,7 +450,9 @@ impl<'a> HirContext<'a> {
         match expr {
             TaiExecExpr::Identifier(name) => {
                 if let Some(value) = self.constant_bindings.get(name) {
-                    if value.is_collection() {
+                    let binding_ty = self.bindings.get(name);
+                    let allow_runtime_array = matches!(binding_ty, Some(TaiType::Array(_)));
+                    if value.is_collection() && !allow_runtime_array {
                         return Err(format!(
                             "常量集合 '{}' 目前只能通过成员访问或下标访问读取",
                             name
@@ -479,6 +488,30 @@ impl<'a> HirContext<'a> {
                 ty: TaiType::Void,
                 kind: HirExprKind::Null,
             }),
+            TaiExecExpr::Array(items) => {
+                if items.is_empty() {
+                    return Err("当前运行时数组字面量暂不支持空数组".to_string());
+                }
+                let mut lowered = Vec::with_capacity(items.len());
+                for item in items {
+                    let value = self.lower_expr(item)?;
+                    match value.ty {
+                        TaiType::Integer | TaiType::Boolean | TaiType::Text => {}
+                        _ => {
+                            return Err(format!("当前运行时数组暂不支持元素类型 {}", value.ty));
+                        }
+                    }
+                    lowered.push(value);
+                }
+                let element_ty = lowered[0].ty.clone();
+                for item in lowered.iter().skip(1) {
+                    self.ensure_assignable(&element_ty, &item.ty, "数组字面量元素")?;
+                }
+                Ok(HirExpr {
+                    ty: TaiType::Array(Box::new(element_ty)),
+                    kind: HirExprKind::ArrayLiteral { elements: lowered },
+                })
+            }
             TaiExecExpr::Grouping(inner) => self.lower_expr(inner),
             TaiExecExpr::Call { callee, arguments } => {
                 let TaiExecExpr::Identifier(name) = callee.as_ref() else {
@@ -605,10 +638,24 @@ impl<'a> HirContext<'a> {
                 })
             }
             TaiExecExpr::Assign { .. } => Err("HIR 表达式中不支持嵌套赋值".to_string()),
-            TaiExecExpr::Array(_) => Err("当前数组值只能在可静态求值的上下文中使用".to_string()),
             TaiExecExpr::Object(_) => Err("当前对象值只能在可静态求值的上下文中使用".to_string()),
             TaiExecExpr::Member { .. } => Err("当前成员访问需要可静态求值的对象".to_string()),
-            TaiExecExpr::Index { .. } => Err("当前下标访问需要可静态求值的数组或对象".to_string()),
+            TaiExecExpr::Index { object, index } => {
+                let array = self.lower_expr(object)?;
+                let element_ty = match &array.ty {
+                    TaiType::Array(inner) => inner.as_ref().clone(),
+                    _ => return Err("当前运行时下标访问仅支持数组值".to_string()),
+                };
+                let index = self.lower_expr(index)?;
+                self.ensure_integer(&index.ty, "数组下标")?;
+                Ok(HirExpr {
+                    ty: element_ty,
+                    kind: HirExprKind::ArrayIndex {
+                        array: Box::new(array),
+                        index: Box::new(index),
+                    },
+                })
+            }
         }
     }
 
@@ -810,7 +857,8 @@ impl<'a> HirContext<'a> {
                 ty: TaiType::Void,
                 kind: HirExprKind::Null,
             }),
-            ConstValue::Array(_) | ConstValue::Object(_) => None,
+            ConstValue::Array(_) => None,
+            ConstValue::Object(_) => None,
         }
     }
 
@@ -1201,5 +1249,27 @@ mod tests {
             panic!("expected folded return");
         };
         assert!(matches!(expr.kind, HirExprKind::Number(13)));
+    }
+
+    #[test]
+    fn lowers_runtime_array_index_access() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序(索引: 整数型) -> 整数型, , ,
+数据: 整数型[] = [3, 5, 8]
+.返回 数据[索引]
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::Let { ty, value: Some(value), .. } = &hir.functions[0].body[0] else {
+            panic!("expected runtime array let");
+        };
+        assert_eq!(ty, &TaiType::Array(Box::new(TaiType::Integer)));
+        assert!(matches!(value.kind, HirExprKind::ArrayLiteral { .. }));
+        let HirStmt::Return(Some(expr)) = &hir.functions[0].body[1] else {
+            panic!("expected runtime array return");
+        };
+        assert!(matches!(expr.kind, HirExprKind::ArrayIndex { .. }));
     }
 }

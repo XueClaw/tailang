@@ -504,6 +504,9 @@ impl<'a> TextBuilder<'a> {
                 self.emit_print_value(*value);
                 Ok(())
             }
+            MirInstruction::ArrayNew { .. } | MirInstruction::ArrayGet { .. } => {
+                Err("self-native 后端暂不支持运行时数组；请使用 --backend llvm".to_string())
+            }
             MirInstruction::Jump { target } => {
                 self.emit_jump(target);
                 Ok(())
