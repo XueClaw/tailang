@@ -95,8 +95,15 @@ Current behavior:
 - discovers `*_test.meng` / `.test.meng` test specs
 - resolves matching `.tai` first, then `.meng` source
 - builds the target program and executes the produced artifact
+- forwards `--backend` and `--opt-level` to the test build
 - supports `期望 输出 "..."` stdout line assertions
 - supports `期望 退出码 N` exit-code assertions
+
+Example:
+
+```bash
+meng test tests/ --backend llvm --opt-level 2
+```
 
 ## UTF-8 Policy
 

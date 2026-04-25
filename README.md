@@ -58,9 +58,9 @@ meng precompile src/main.meng
 meng validate-tai src/main.tai
 meng build src/main.tai
 meng run src/main.tai
+meng test tests/ --backend llvm --opt-level 2
 meng bench cli/bench_numeric.tai --report cli/bench_numeric.bench.json
 meng doc src/
-meng test
 ```
 
 各步骤含义：
@@ -71,7 +71,7 @@ meng test
 - `meng run`：构建并执行目标程序
 - `meng bench`：运行原生目标并与 Python 基线进行对比
 - `meng doc`：从 `.tai-first` 项目输入生成 Markdown 文档
-- `meng test`：发现测试规格，构建目标并校验 stdout / 退出码
+- `meng test`：发现测试规格，构建目标并校验 stdout / 退出码，可通过 `--backend llvm` 覆盖 LLVM 特性
 
 ## 已实现能力
 

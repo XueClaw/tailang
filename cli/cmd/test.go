@@ -23,7 +23,8 @@ var testCmd = &cobra.Command{
 Examples:
   meng test              # Run all tests
   meng test tests/       # Run tests in directory
-  meng test tests/foo.meng  # Run specific test file`,
+  meng test tests/foo.meng  # Run specific test file
+  meng test tests/ --backend llvm --opt-level 2  # Run tests through LLVM`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		testPath := "."
@@ -60,7 +61,7 @@ Examples:
 		for _, testFile := range testFiles {
 			fmt.Printf("  Running %s... ", testFile)
 
-			if err := runMengTestFile(testFile); err != nil {
+			if err := runMengTestFile(cmd, testFile); err != nil {
 				fmt.Printf("✗ FAILED (%s)\n", err)
 				failed++
 			} else {
@@ -96,7 +97,7 @@ type compiledProgramResult struct {
 	exitCode int
 }
 
-func runMengTestFile(testFile string) error {
+func runMengTestFile(cmd *cobra.Command, testFile string) error {
 	content, err := os.ReadFile(testFile)
 	if err != nil {
 		return fmt.Errorf("read test file: %w", err)
@@ -122,7 +123,13 @@ func runMengTestFile(testFile string) error {
 	defer os.RemoveAll(tempDir)
 
 	outputPath := filepath.Join(tempDir, defaultOutputName(targetFile, "windows"))
-	request, err := newBuildRequest(targetFile, outputPath, commandTargetForTests(), "self-native", "1")
+	request, err := newBuildRequest(
+		targetFile,
+		outputPath,
+		commandTargetForTests(),
+		commandBackendForTests(cmd),
+		commandOptLevelForTests(cmd),
+	)
 	if err != nil {
 		return err
 	}
@@ -168,6 +175,20 @@ func commandTargetForTests() string {
 		return "windows"
 	}
 	return runtime.GOOS
+}
+
+func commandBackendForTests(cmd *cobra.Command) string {
+	if cmd == nil {
+		return "self-native"
+	}
+	return commandBackend(cmd)
+}
+
+func commandOptLevelForTests(cmd *cobra.Command) string {
+	if cmd == nil {
+		return "1"
+	}
+	return commandOptLevel(cmd)
 }
 
 func executeCompiledProgramForTest(programPath string) (compiledProgramResult, error) {
@@ -273,4 +294,6 @@ func resolveTargetSourceFile(testFile string) (string, error) {
 
 func init() {
 	rootCmd.AddCommand(testCmd)
+	testCmd.Flags().String("backend", "self-native", "Compiler backend for test builds (self-native, llvm)")
+	testCmd.Flags().String("opt-level", "1", "Optimization level for test builds (0, 1, 2)")
 }
