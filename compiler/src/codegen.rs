@@ -1422,4 +1422,24 @@ mod tests {
         let result = run_native_executable(source);
         assert_eq!(result.exit_code, 13);
     }
+
+    #[test]
+    fn runs_c_style_logical_ops_through_self_native_backend() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main(flag: bool, ready: bool, valid: bool) -> int, , ,
+.if !flag || ready && valid
+    .return 1
+.else
+    .return 0
+.end
+
+.subprogram 主程序() -> 整数型, , ,
+.return main(false, false, false)
+"#;
+        let result = run_native_executable(source);
+        assert_eq!(result.exit_code, 1);
+    }
+
 }

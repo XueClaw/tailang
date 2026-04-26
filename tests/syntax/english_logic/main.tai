@@ -1,0 +1,12 @@
+.version 3
+.module english_logic
+
+.subprogram main(flag: bool, ready: bool, valid: bool) -> int, , ,
+.if !flag || ready && valid
+    .return 1
+.else
+    .return 0
+.end
+
+.subprogram 主程序() -> 整数型, , ,
+.return main(false, false, false)

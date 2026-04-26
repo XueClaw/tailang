@@ -9,6 +9,7 @@ meng precompile src/main.meng
 meng validate-tai src/main.tai
 meng build src/main.tai
 meng run src/main.tai
+meng test tests/ --backend llvm --opt-level 2
 meng bench cli/bench_numeric.tai --report cli/bench_numeric.bench.json
 meng doc src/
 ```
@@ -45,7 +46,9 @@ Current behavior:
 - `.tai` is the formal compiler input
 - compiler backend is native
 - currently supported native output target: Windows x64
-- current native executable subset includes returns, conditionals, loops, `match`, text comparison, and user function calls
+- current native executable subset includes returns, conditionals, loops, `match`, text comparison, user function calls, and English `&&` / `||` / `!`
+- runtime arrays are formal on the LLVM path
+- `self-native` still rejects runtime arrays and should be used for scalar/control-flow workloads
 
 ### `meng run`
 
@@ -55,6 +58,7 @@ Current behavior:
 
 - uses the same build pipeline as `meng build`
 - executes the produced artifact
+- runtime array workloads should be run with `--backend llvm`
 
 ### `meng bench`
 
@@ -98,6 +102,7 @@ Current behavior:
 - forwards `--backend` and `--opt-level` to the test build
 - supports `期望 输出 "..."` stdout line assertions
 - supports `期望 退出码 N` exit-code assertions
+- project-level syntax/runtime regression samples can live under `tests/syntax/`, `tests/runtime/`, and `tests/compat/`
 
 Example:
 
@@ -116,7 +121,7 @@ All Tailang source inputs must be UTF-8.
 
 ## Formal `.tai` Notes
 
-- Chinese-only keywords
+- Chinese and English mirror keywords are both formal textual input
 - dot-prefixed style
 - E-language-like natural syntax
 - semantic closing keywords instead of braces
@@ -136,3 +141,9 @@ Examples:
 - `.代码`
 - `.代码结束`
 - `.显示`
+- `.if`
+- `.while`
+- `.match`
+- `&&`
+- `||`
+- `!`

@@ -1,0 +1,16 @@
+.version 3
+.module english_control_flow
+
+.subprogram pick(state: int) -> int, , ,
+.match state
+.case 1
+    .return 10
+.case 2
+    .return 20
+.default
+    .return 30
+.end
+
+.subprogram main() -> int, , ,
+count: int = 2
+.return pick(count)

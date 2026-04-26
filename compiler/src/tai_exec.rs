@@ -73,10 +73,13 @@ enum TokenKind {
     Assign,
     Equal,
     NotEqual,
+    Bang,
     Greater,
     GreaterEqual,
     Less,
     LessEqual,
+    LogicalAnd,
+    LogicalOr,
     Plus,
     Minus,
     Star,
@@ -165,8 +168,29 @@ impl<'a> TaiExecLexer<'a> {
                 }
                 '!' => {
                     self.bump();
-                    if self.peek() == Some('=') { self.bump(); TokenKind::NotEqual } else {
-                        return Err(TaiExecError { message: "非法字符 '!'".to_string(), offset });
+                    if self.peek() == Some('=') {
+                        self.bump();
+                        TokenKind::NotEqual
+                    } else {
+                        TokenKind::Bang
+                    }
+                }
+                '&' => {
+                    self.bump();
+                    if self.peek() == Some('&') {
+                        self.bump();
+                        TokenKind::LogicalAnd
+                    } else {
+                        return Err(TaiExecError { message: "非法字符 '&'".to_string(), offset });
+                    }
+                }
+                '|' => {
+                    self.bump();
+                    if self.peek() == Some('|') {
+                        self.bump();
+                        TokenKind::LogicalOr
+                    } else {
+                        return Err(TaiExecError { message: "非法字符 '|'".to_string(), offset });
                     }
                 }
                 '>' => {
@@ -496,7 +520,9 @@ impl TaiExecParser {
 
     fn parse_or(&mut self) -> Result<TaiExecExpr, TaiExecError> {
         let mut expr = self.parse_and()?;
-        while self.match_keyword(Keyword::Or) {
+        while self.match_keyword(Keyword::Or)
+            || self.match_token(|kind| matches!(kind, TokenKind::LogicalOr))
+        {
             let right = self.parse_and()?;
             expr = TaiExecExpr::Binary { left: Box::new(expr), op: TaiExecBinaryOp::Or, right: Box::new(right) };
         }
@@ -505,7 +531,9 @@ impl TaiExecParser {
 
     fn parse_and(&mut self) -> Result<TaiExecExpr, TaiExecError> {
         let mut expr = self.parse_equality()?;
-        while self.match_keyword(Keyword::And) {
+        while self.match_keyword(Keyword::And)
+            || self.match_token(|kind| matches!(kind, TokenKind::LogicalAnd))
+        {
             let right = self.parse_equality()?;
             expr = TaiExecExpr::Binary { left: Box::new(expr), op: TaiExecBinaryOp::And, right: Box::new(right) };
         }
@@ -583,7 +611,9 @@ impl TaiExecParser {
     }
 
     fn parse_unary(&mut self) -> Result<TaiExecExpr, TaiExecError> {
-        if self.match_keyword(Keyword::Not) {
+        if self.match_keyword(Keyword::Not)
+            || self.match_token(|kind| matches!(kind, TokenKind::Bang))
+        {
             return Ok(TaiExecExpr::Unary { op: TaiExecUnaryOp::Not, right: Box::new(self.parse_unary()?) });
         }
         if self.match_token(|kind| matches!(kind, TokenKind::Minus)) {
@@ -949,6 +979,46 @@ mod tests {
             panic!("expected typed local declaration");
         };
         assert_eq!(ty, "整数型[]");
+    }
+
+    #[test]
+    fn parses_c_style_logical_operators() {
+        let source = r#"
+.return !flag || ready && valid
+"#;
+        let statements = parse_native_tai_exec(source).expect("parse should succeed");
+        let TaiExecStmt::Return(Some(expr)) = &statements[0] else {
+            panic!("expected return expression");
+        };
+        let TaiExecExpr::Binary { op, left, right } = expr else {
+            panic!("expected binary or expression");
+        };
+        assert_eq!(*op, TaiExecBinaryOp::Or);
+        assert!(matches!(left.as_ref(), TaiExecExpr::Unary { op: TaiExecUnaryOp::Not, .. }));
+        assert!(matches!(right.as_ref(), TaiExecExpr::Binary { op: TaiExecBinaryOp::And, .. }));
+    }
+
+    #[test]
+    fn parses_english_control_flow_and_typed_local() {
+        let source = r#"
+count: int = 0
+.while count < 2
+    count = count + 1
+.end
+.match count
+.case 2
+    .return 20
+.default
+    .return 0
+.end
+"#;
+        let statements = parse_native_tai_exec(source).expect("parse should succeed");
+        let TaiExecStmt::Let { ty: Some(ty), .. } = &statements[0] else {
+            panic!("expected typed local declaration");
+        };
+        assert_eq!(ty, "int");
+        assert!(matches!(statements[1], TaiExecStmt::While { .. }));
+        assert!(matches!(statements[2], TaiExecStmt::Match { .. }));
     }
 
     #[test]

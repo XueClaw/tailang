@@ -1272,4 +1272,57 @@ mod tests {
         };
         assert!(matches!(expr.kind, HirExprKind::ArrayIndex { .. }));
     }
+
+    #[test]
+    fn lowers_c_style_logical_ops_in_english_flow() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main(flag: bool, ready: bool, valid: bool) -> int, , ,
+.if !flag || ready && valid
+    .return 1
+.else
+    .return 0
+.end
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::If { condition, .. } = &hir.functions[0].body[0] else {
+            panic!("expected if statement");
+        };
+        assert_eq!(condition.ty, TaiType::Boolean);
+        let HirExprKind::Binary { op, left, right } = &condition.kind else {
+            panic!("expected or expression");
+        };
+        assert_eq!(*op, HirBinaryOp::Or);
+        assert!(matches!(left.kind, HirExprKind::Unary { op: HirUnaryOp::Not, .. }));
+        assert!(matches!(right.kind, HirExprKind::Binary { op: HirBinaryOp::And, .. }));
+    }
+
+    #[test]
+    fn lowers_english_while_match_and_typed_local() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main() -> int, , ,
+count: int = 0
+.while count < 2
+    count = count + 1
+.end
+.match count
+.case 2
+    .return 20
+.default
+    .return 0
+.end
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::Let { ty, .. } = &hir.functions[0].body[0] else {
+            panic!("expected typed local");
+        };
+        assert_eq!(*ty, TaiType::Integer);
+        assert!(matches!(hir.functions[0].body[1], HirStmt::While { .. }));
+        assert!(matches!(hir.functions[0].body[2], HirStmt::Match { .. }));
+    }
 }

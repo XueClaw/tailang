@@ -709,6 +709,50 @@ func TestCompileToExecutableSupportsLlvmVoidReturnFlow(t *testing.T) {
 	}
 }
 
+func TestCompileToExecutableSupportsLlvmRuntimeArrayFlow(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "llvm_array.exe")
+	ir := &IR{
+		Source: `.version 3
+.module demo
+.subprogram main() -> int, , ,
+values: int[] = [3, 5, 8]
+.print values[1]
+.return values[2]`,
+	}
+
+	if err := compileToExecutable(ir, outputPath, "windows", "llvm", "1"); err != nil {
+		t.Fatalf("expected llvm backend to compile runtime array flow, got %v", err)
+	}
+	result := runExecutable(t, outputPath)
+	if result.exitCode != 8 {
+		t.Fatalf("expected exit code 8, got %d", result.exitCode)
+	}
+	if result.stdout != "5\n" {
+		t.Fatalf("expected runtime array output 5, got %q", result.stdout)
+	}
+}
+
+func TestCompileToExecutableRejectsRuntimeArrayOnSelfNative(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "self_native_array.exe")
+	ir := &IR{
+		Source: `.version 3
+.module demo
+.subprogram main() -> int, , ,
+values: int[] = [3, 5, 8]
+.return values[1]`,
+	}
+
+	err := compileToExecutable(ir, outputPath, "windows", "self-native", "1")
+	if err == nil {
+		t.Fatal("expected self-native runtime array compile to fail")
+	}
+	if !strings.Contains(err.Error(), "--backend llvm") {
+		t.Fatalf("expected self-native array error to recommend llvm, got %v", err)
+	}
+}
+
 func TestExtractCodeBlocksFromTextualTai(t *testing.T) {
 	input := `.版本 3
 .程序集 演示

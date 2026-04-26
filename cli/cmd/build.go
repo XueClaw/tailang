@@ -2,8 +2,10 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -379,11 +381,22 @@ func compileToExecutable(ir *IR, outputName string, target string, backend strin
 	}
 	cmd := exec.Command("cargo", cargoArgs...)
 	cmd.Dir = compilerDir
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	var stdoutBuf bytes.Buffer
+	var stderrBuf bytes.Buffer
+	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("Rust compiler invocation failed: %w", err)
+		stderr := strings.TrimSpace(stderrBuf.String())
+		stdout := strings.TrimSpace(stdoutBuf.String())
+		switch {
+		case stderr != "":
+			return fmt.Errorf("Rust compiler invocation failed: %s", stderr)
+		case stdout != "":
+			return fmt.Errorf("Rust compiler invocation failed: %s", stdout)
+		default:
+			return fmt.Errorf("Rust compiler invocation failed: %w", err)
+		}
 	}
 	return nil
 }

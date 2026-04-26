@@ -161,6 +161,16 @@ passed: bool = true
 - `||`
 - `!`
 
+英文逻辑运算最小示例：
+
+```tai
+.if !flag || ready && valid
+    return true
+.else
+    return false
+.end
+```
+
 ## 流程控制
 
 ### 中文

@@ -84,6 +84,7 @@ meng doc src/
 - runtime ABI 骨架
 - 入口函数检测
 - `.显示 "文本"` 语法接入
+- 英文 `&&` / `||` / `!` 逻辑运算
 - Windows x64 原生可执行文件输出
 - `meng bench` benchmark 流程
 - `meng test` 目标构建、执行与断言校验
@@ -95,6 +96,7 @@ meng doc src/
 - 后端参数 `self-native` / `llvm`
 - 优化等级 `0` / `1` / `2`
 - 当前默认正式目标：Windows x64
+- 运行时数组正式能力当前依赖 `llvm` 后端
 
 ## 尚未完成的部分
 
@@ -102,8 +104,9 @@ meng doc src/
 
 - 面向性能的完整 x64 后端优化
 - 真正使用 runtime 的输出路径
-- 数组 / 对象运行时
-- 成员访问 / 下标访问执行链
+- self-native 运行时数组
+- 运行时对象
+- 运行时成员访问 / 对象下标访问
 - Linux ELF64 / macOS Mach-O 原生产物实现
 - GUI 从骨架演进到完整产品闭环
 
@@ -190,6 +193,7 @@ Tailang 强制整个项目使用 UTF-8。
 
 - [CLI Guide](docs/CLI_GUIDE.md)
 - [`.tai v0.3` 语言规范](docs/spec/TAI_LANGUAGE_V3.md)
+- [`.tai` 支持矩阵](docs/spec/TAI_SUPPORT_MATRIX.md)
 - [Native Backend Architecture](docs/spec/NATIVE_BACKEND_ARCHITECTURE.md)
 - [Contributing](CONTRIBUTING.md)
 
