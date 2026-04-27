@@ -88,6 +88,8 @@ meng doc src/
 - Windows x64 原生可执行文件输出
 - `meng bench` benchmark 流程
 - `meng test` 目标构建、执行与断言校验
+- self-native 路径的运行时数组
+- self-native 与 LLVM 路径的运行时对象成员读取
 
 当前 `meng build` 主线支持：
 
@@ -96,7 +98,8 @@ meng doc src/
 - 后端参数 `self-native` / `llvm`
 - 优化等级 `0` / `1` / `2`
 - 当前默认正式目标：Windows x64
-- 运行时数组正式能力当前依赖 `llvm` 后端
+- 运行时数组当前在 `self-native` 与 `llvm` 都可用
+- 运行时对象成员读取当前在 `self-native` 与 `llvm` 都可用
 
 ## 尚未完成的部分
 
@@ -104,9 +107,7 @@ meng doc src/
 
 - 面向性能的完整 x64 后端优化
 - 真正使用 runtime 的输出路径
-- self-native 运行时数组
-- 运行时对象
-- 运行时成员访问 / 对象下标访问
+- 更深层的 self-native 运行时对象能力收敛
 - Linux ELF64 / macOS Mach-O 原生产物实现
 - GUI 从骨架演进到完整产品闭环
 

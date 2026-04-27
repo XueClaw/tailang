@@ -1,0 +1,7 @@
+.version 3
+.module self_native_array
+
+.subprogram main() -> int, , ,
+values: int[] = [3, 5, 8]
+.print values[1]
+.return values[2]

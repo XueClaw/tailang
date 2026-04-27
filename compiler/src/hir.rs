@@ -70,6 +70,13 @@ pub enum HirExprKind {
     String(String),
     Bool(bool),
     Null,
+    ObjectLiteral {
+        entries: Vec<(String, HirExpr)>,
+    },
+    ObjectAccess {
+        object: Box<HirExpr>,
+        key: Box<HirExpr>,
+    },
     ArrayLiteral {
         elements: Vec<HirExpr>,
     },
@@ -227,7 +234,15 @@ struct HirContext<'a> {
     locals: Vec<HirBinding>,
     bindings: BTreeMap<String, TaiType>,
     constant_bindings: BTreeMap<String, ConstValue>,
+    runtime_shapes: BTreeMap<String, RuntimeShape>,
     signatures: &'a BTreeMap<String, FunctionSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RuntimeShape {
+    Scalar(TaiType),
+    Array(Box<RuntimeShape>),
+    Object(BTreeMap<String, RuntimeShape>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -275,6 +290,7 @@ impl<'a> HirContext<'a> {
             locals,
             bindings,
             constant_bindings: BTreeMap::new(),
+            runtime_shapes: BTreeMap::new(),
             signatures,
         })
     }
@@ -285,7 +301,11 @@ impl<'a> HirContext<'a> {
 
     fn lower_stmt(&mut self, stmt: &TaiExecStmt) -> Result<HirStmt, String> {
         match stmt {
-            TaiExecStmt::Let { name, ty, value } => {
+            TaiExecStmt::Let {
+                name,
+                ty: declared_ty,
+                value,
+            } => {
                 let const_value = value
                     .as_ref()
                     .map(|expr| self.eval_const(expr))
@@ -297,7 +317,8 @@ impl<'a> HirContext<'a> {
                     .get(name)
                     .cloned()
                     .or_else(|| {
-                        ty.as_deref()
+                        declared_ty
+                            .as_deref()
                             .map(TaiType::from_decl_name)
                             .transpose()
                             .ok()
@@ -309,13 +330,28 @@ impl<'a> HirContext<'a> {
                 if let Some(expr) = &lowered {
                     self.ensure_assignable(&ty, &expr.ty, &format!("变量 '{}'", name))?;
                 }
+                let wants_runtime_object = matches!(
+                    declared_ty.as_deref(),
+                    Some("对象型") | Some("对象") | Some("object")
+                );
                 if let Some(value) = &const_value {
-                    self.constant_bindings.insert(name.clone(), value.clone());
                     if matches!(value, ConstValue::Object(_)) {
-                        return Ok(HirStmt::Noop);
+                        if wants_runtime_object {
+                            self.constant_bindings.remove(name);
+                        } else {
+                            self.constant_bindings.insert(name.clone(), value.clone());
+                            return Ok(HirStmt::Noop);
+                        }
+                    } else {
+                        self.constant_bindings.insert(name.clone(), value.clone());
                     }
                 } else {
                     self.constant_bindings.remove(name);
+                }
+                if let Some(shape) = lowered.as_ref().and_then(Self::runtime_shape_from_expr) {
+                    self.runtime_shapes.insert(name.clone(), shape);
+                } else if !matches!(ty, TaiType::Object | TaiType::Array(_)) {
+                    self.runtime_shapes.remove(name);
                 }
                 self.bindings.entry(name.clone()).or_insert_with(|| ty.clone());
                 if !self.locals.iter().any(|item| item.name == *name)
@@ -402,22 +438,33 @@ impl<'a> HirContext<'a> {
             }
             TaiExecStmt::Expr(TaiExecExpr::Assign { target, value }) => match target.as_ref() {
                 TaiExecExpr::Identifier(name) => {
-                    let const_value = self.eval_const(value)?;
-                    if let Some(value) = &const_value {
-                        self.constant_bindings.insert(name.clone(), value.clone());
-                        if value.is_collection() {
-                            return Ok(HirStmt::Noop);
-                        }
-                    } else {
-                        self.constant_bindings.remove(name);
-                    }
                     let slot_ty = self
                         .bindings
                         .get(name)
                         .cloned()
                         .ok_or_else(|| format!("变量 '{}' 尚未声明类型", name))?;
+                    let const_value = self.eval_const(value)?;
+                    if let Some(value) = &const_value {
+                        if matches!(slot_ty, TaiType::Object) && matches!(value, ConstValue::Object(_)) {
+                            self.constant_bindings.remove(name);
+                        } else {
+                            self.constant_bindings.insert(name.clone(), value.clone());
+                            if value.is_collection()
+                                && !matches!(slot_ty, TaiType::Array(_) | TaiType::Object)
+                            {
+                                return Ok(HirStmt::Noop);
+                            }
+                        }
+                    } else {
+                        self.constant_bindings.remove(name);
+                    }
                     let value = self.lower_expr(value)?;
                     self.ensure_assignable(&slot_ty, &value.ty, &format!("变量 '{}'", name))?;
+                    if let Some(shape) = Self::runtime_shape_from_expr(&value) {
+                        self.runtime_shapes.insert(name.clone(), shape);
+                    } else if !matches!(slot_ty, TaiType::Object | TaiType::Array(_)) {
+                        self.runtime_shapes.remove(name);
+                    }
                     Ok(HirStmt::Assign {
                         name: name.clone(),
                         value,
@@ -451,8 +498,11 @@ impl<'a> HirContext<'a> {
             TaiExecExpr::Identifier(name) => {
                 if let Some(value) = self.constant_bindings.get(name) {
                     let binding_ty = self.bindings.get(name);
-                    let allow_runtime_array = matches!(binding_ty, Some(TaiType::Array(_)));
-                    if value.is_collection() && !allow_runtime_array {
+                    let allow_runtime_collection = matches!(
+                        binding_ty,
+                        Some(TaiType::Array(_) | TaiType::Object)
+                    );
+                    if value.is_collection() && !allow_runtime_collection {
                         return Err(format!(
                             "常量集合 '{}' 目前只能通过成员访问或下标访问读取",
                             name
@@ -495,11 +545,8 @@ impl<'a> HirContext<'a> {
                 let mut lowered = Vec::with_capacity(items.len());
                 for item in items {
                     let value = self.lower_expr(item)?;
-                    match value.ty {
-                        TaiType::Integer | TaiType::Boolean | TaiType::Text => {}
-                        _ => {
-                            return Err(format!("当前运行时数组暂不支持元素类型 {}", value.ty));
-                        }
+                    if matches!(value.ty, TaiType::Void) {
+                        return Err(format!("当前运行时数组暂不支持元素类型 {}", value.ty));
                     }
                     lowered.push(value);
                 }
@@ -510,6 +557,20 @@ impl<'a> HirContext<'a> {
                 Ok(HirExpr {
                     ty: TaiType::Array(Box::new(element_ty)),
                     kind: HirExprKind::ArrayLiteral { elements: lowered },
+                })
+            }
+            TaiExecExpr::Object(entries) => {
+                let mut lowered = Vec::with_capacity(entries.len());
+                for (key, value_expr) in entries {
+                    let value = self.lower_expr(value_expr)?;
+                    if matches!(value.ty, TaiType::Void) {
+                        return Err(format!("当前运行时对象暂不支持成员类型 {}", value.ty));
+                    }
+                    lowered.push((key.clone(), value));
+                }
+                Ok(HirExpr {
+                    ty: TaiType::Object,
+                    kind: HirExprKind::ObjectLiteral { entries: lowered },
                 })
             }
             TaiExecExpr::Grouping(inner) => self.lower_expr(inner),
@@ -638,23 +699,67 @@ impl<'a> HirContext<'a> {
                 })
             }
             TaiExecExpr::Assign { .. } => Err("HIR 表达式中不支持嵌套赋值".to_string()),
-            TaiExecExpr::Object(_) => Err("当前对象值只能在可静态求值的上下文中使用".to_string()),
-            TaiExecExpr::Member { .. } => Err("当前成员访问需要可静态求值的对象".to_string()),
-            TaiExecExpr::Index { object, index } => {
-                let array = self.lower_expr(object)?;
-                let element_ty = match &array.ty {
-                    TaiType::Array(inner) => inner.as_ref().clone(),
-                    _ => return Err("当前运行时下标访问仅支持数组值".to_string()),
+            TaiExecExpr::Member { object, property } => {
+                let object = self.lower_expr(object)?;
+                if object.ty != TaiType::Object {
+                    return Err("当前运行时成员访问仅支持对象值".to_string());
+                }
+                let value_ty = self
+                    .runtime_shape(&object)
+                    .and_then(|shape| shape.object_member(property))
+                    .map(|shape| shape.runtime_type())
+                    .ok_or_else(|| format!("对象成员 '{}' 缺少可推断的正式类型", property))?;
+                let key = HirExpr {
+                    ty: TaiType::Text,
+                    kind: HirExprKind::String(property.clone()),
                 };
-                let index = self.lower_expr(index)?;
-                self.ensure_integer(&index.ty, "数组下标")?;
                 Ok(HirExpr {
-                    ty: element_ty,
-                    kind: HirExprKind::ArrayIndex {
-                        array: Box::new(array),
-                        index: Box::new(index),
+                    ty: value_ty,
+                    kind: HirExprKind::ObjectAccess {
+                        object: Box::new(object),
+                        key: Box::new(key),
                     },
                 })
+            }
+            TaiExecExpr::Index { object, index } => {
+                let object = self.lower_expr(object)?;
+                match &object.ty {
+                    TaiType::Array(inner) => {
+                        let element_ty = inner.as_ref().clone();
+                        let index = self.lower_expr(index)?;
+                        self.ensure_integer(&index.ty, "数组下标")?;
+                        Ok(HirExpr {
+                            ty: element_ty,
+                            kind: HirExprKind::ArrayIndex {
+                                array: Box::new(object),
+                                index: Box::new(index),
+                            },
+                        })
+                    }
+                    TaiType::Object => {
+                        let key_value = self
+                            .eval_const(index)?
+                            .ok_or_else(|| "当前运行时对象下标访问需要可静态求值的文本键".to_string())?;
+                        let ConstValue::Text(key_name) = key_value else {
+                            return Err("当前运行时对象下标访问仅支持文本键".to_string());
+                        };
+                        let value_ty = self
+                            .runtime_shape(&object)
+                            .and_then(|shape| shape.object_member(&key_name))
+                            .map(|shape| shape.runtime_type())
+                            .ok_or_else(|| format!("对象键 '{}' 缺少可推断的正式类型", key_name))?;
+                        let key = self.lower_expr(index)?;
+                        self.ensure_assignable(&TaiType::Text, &key.ty, "对象下标键")?;
+                        Ok(HirExpr {
+                            ty: value_ty,
+                            kind: HirExprKind::ObjectAccess {
+                                object: Box::new(object),
+                                key: Box::new(key),
+                            },
+                        })
+                    }
+                    _ => Err("当前运行时下标访问仅支持数组值或对象值".to_string()),
+                }
             }
         }
     }
@@ -839,6 +944,61 @@ impl<'a> HirContext<'a> {
         Ok(result)
     }
 
+    fn runtime_shape(&self, expr: &HirExpr) -> Option<RuntimeShape> {
+        Self::runtime_shape_from_expr_with_bindings(expr, &self.runtime_shapes)
+    }
+
+    fn runtime_shape_from_expr(expr: &HirExpr) -> Option<RuntimeShape> {
+        match &expr.kind {
+            HirExprKind::Number(_) => Some(RuntimeShape::Scalar(TaiType::Integer)),
+            HirExprKind::String(_) => Some(RuntimeShape::Scalar(TaiType::Text)),
+            HirExprKind::Bool(_) => Some(RuntimeShape::Scalar(TaiType::Boolean)),
+            HirExprKind::Null => Some(RuntimeShape::Scalar(TaiType::Void)),
+            HirExprKind::ObjectLiteral { entries } => Some(RuntimeShape::Object(
+                entries
+                    .iter()
+                    .filter_map(|(key, value)| {
+                        Self::runtime_shape_from_expr(value).map(|shape| (key.clone(), shape))
+                    })
+                    .collect::<BTreeMap<_, _>>(),
+            )),
+            HirExprKind::ArrayLiteral { elements } => elements
+                .first()
+                .and_then(Self::runtime_shape_from_expr)
+                .map(|shape| RuntimeShape::Array(Box::new(shape))),
+            _ => None,
+        }
+    }
+
+    fn runtime_shape_from_expr_with_bindings(
+        expr: &HirExpr,
+        runtime_shapes: &BTreeMap<String, RuntimeShape>,
+    ) -> Option<RuntimeShape> {
+        match &expr.kind {
+            HirExprKind::Identifier(name) => runtime_shapes.get(name).cloned(),
+            HirExprKind::ObjectAccess { object, key } => {
+                let RuntimeShape::Object(entries) =
+                    Self::runtime_shape_from_expr_with_bindings(object, runtime_shapes)?
+                else {
+                    return None;
+                };
+                let HirExprKind::String(key_name) = &key.kind else {
+                    return None;
+                };
+                entries.get(key_name).cloned()
+            }
+            HirExprKind::ArrayIndex { array, .. } => {
+                let RuntimeShape::Array(element) =
+                    Self::runtime_shape_from_expr_with_bindings(array, runtime_shapes)?
+                else {
+                    return None;
+                };
+                Some(*element)
+            }
+            _ => Self::runtime_shape_from_expr(expr),
+        }
+    }
+
     fn const_to_scalar_hir(value: &ConstValue) -> Option<HirExpr> {
         match value {
             ConstValue::Integer(value) => Some(HirExpr {
@@ -997,12 +1157,30 @@ impl ConstValue {
             ConstValue::Boolean(_) => Some(TaiType::Boolean),
             ConstValue::Text(_) => Some(TaiType::Text),
             ConstValue::Null => Some(TaiType::Void),
-            ConstValue::Array(_) | ConstValue::Object(_) => None,
+            ConstValue::Array(_) => None,
+            ConstValue::Object(_) => Some(TaiType::Object),
         }
     }
 
     fn is_collection(&self) -> bool {
         matches!(self, ConstValue::Array(_) | ConstValue::Object(_))
+    }
+}
+
+impl RuntimeShape {
+    fn runtime_type(&self) -> TaiType {
+        match self {
+            RuntimeShape::Scalar(ty) => ty.clone(),
+            RuntimeShape::Array(inner) => TaiType::Array(Box::new(inner.runtime_type())),
+            RuntimeShape::Object(_) => TaiType::Object,
+        }
+    }
+
+    fn object_member(&self, key: &str) -> Option<RuntimeShape> {
+        match self {
+            RuntimeShape::Object(entries) => entries.get(key).cloned(),
+            _ => None,
+        }
     }
 }
 
@@ -1324,5 +1502,62 @@ count: int = 0
         assert_eq!(*ty, TaiType::Integer);
         assert!(matches!(hir.functions[0].body[1], HirStmt::While { .. }));
         assert!(matches!(hir.functions[0].body[2], HirStmt::Match { .. }));
+    }
+
+    #[test]
+    fn lowers_runtime_object_member_access() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"name": "Yui", "score": 8}
+.if data["name"] == "Yui"
+    .return data.score
+.else
+    .return 0
+.end
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::Let { ty, value: Some(value), .. } = &hir.functions[0].body[0] else {
+            panic!("expected object local");
+        };
+        assert_eq!(*ty, TaiType::Object);
+        assert!(matches!(value.kind, HirExprKind::ObjectLiteral { .. }));
+        let HirStmt::If { condition, then_branch, .. } = &hir.functions[0].body[1] else {
+            panic!("expected if statement");
+        };
+        assert_eq!(condition.ty, TaiType::Boolean);
+        let HirStmt::Return(Some(expr)) = &then_branch[0] else {
+            panic!("expected return");
+        };
+        assert_eq!(expr.ty, TaiType::Integer);
+        assert!(matches!(expr.kind, HirExprKind::ObjectAccess { .. }));
+    }
+
+    #[test]
+    fn lowers_nested_runtime_object_and_object_array_access() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"profile": {"name": "Yui"}, "items": [{"score": 5}, {"score": 8}]}
+.if data.profile.name == "Yui"
+    .return data.items[1].score
+.else
+    .return 0
+.end
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::If { condition, then_branch, .. } = &hir.functions[0].body[1] else {
+            panic!("expected if statement");
+        };
+        assert_eq!(condition.ty, TaiType::Boolean);
+        let HirStmt::Return(Some(expr)) = &then_branch[0] else {
+            panic!("expected return");
+        };
+        assert_eq!(expr.ty, TaiType::Integer);
+        assert!(matches!(expr.kind, HirExprKind::ObjectAccess { .. }));
     }
 }

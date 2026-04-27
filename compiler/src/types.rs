@@ -7,6 +7,7 @@ pub enum TaiType {
     Boolean,
     Text,
     Array(Box<TaiType>),
+    Object,
     Void,
 }
 
@@ -23,6 +24,7 @@ impl TaiType {
             "整数型数组" | "整数数组" => Ok(Self::Array(Box::new(Self::Integer))),
             "逻辑型数组" | "布尔型数组" | "布尔数组" => Ok(Self::Array(Box::new(Self::Boolean))),
             "文本型数组" | "文本数组" => Ok(Self::Array(Box::new(Self::Text))),
+            "对象型" | "对象" | "object" => Ok(Self::Object),
             "空" | "空型" | "无返回" | "void" => Ok(Self::Void),
             other => Err(format!("当前类型系统暂不支持类型 '{}'", other)),
         }
@@ -50,6 +52,7 @@ impl fmt::Display for TaiType {
             TaiType::Boolean => "逻辑型",
             TaiType::Text => "文本型",
             TaiType::Array(inner) => return write!(f, "{}[]", inner),
+            TaiType::Object => "对象型",
             TaiType::Void => "空",
         };
         f.write_str(value)

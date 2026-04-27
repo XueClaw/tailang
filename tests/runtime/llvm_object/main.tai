@@ -1,0 +1,7 @@
+.version 3
+.module llvm_object
+
+.subprogram main() -> int, , ,
+data: object = {"name": "Yui", "score": 8}
+.print data["name"]
+.return data.score

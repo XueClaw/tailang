@@ -63,6 +63,16 @@ pub enum MirInstruction {
         target: usize,
         string_id: usize,
     },
+    ObjectNew {
+        target: usize,
+        entries: Vec<(usize, usize)>,
+    },
+    ObjectGet {
+        target: usize,
+        object: usize,
+        key: usize,
+        value_type: TaiType,
+    },
     ArrayNew {
         target: usize,
         element_type: TaiType,
@@ -251,7 +261,9 @@ fn constant_fold_and_branch_simplify(mut function: MirFunction) -> MirFunction {
                     known.remove(target);
                     optimized.push(inst.clone());
                 }
-                MirInstruction::ArrayNew { target, .. }
+                MirInstruction::ObjectNew { target, .. }
+                | MirInstruction::ObjectGet { target, .. }
+                | MirInstruction::ArrayNew { target, .. }
                 | MirInstruction::ArrayGet { target, .. } => {
                     known.remove(target);
                     optimized.push(inst.clone());
@@ -791,6 +803,36 @@ impl<'a> MirBuilder<'a> {
                 });
                 Ok(slot)
             }
+            HirExprKind::ObjectLiteral { entries } => {
+                let mut lowered = Vec::with_capacity(entries.len());
+                for (key, value) in entries {
+                    let key_slot = self.allocate_temp(TaiType::Text);
+                    let string_id = self.intern_string(key);
+                    self.emit(MirInstruction::ConstString {
+                        target: key_slot,
+                        string_id,
+                    });
+                    lowered.push((key_slot, self.lower_expr(value)?));
+                }
+                let target = self.allocate_temp(TaiType::Object);
+                self.emit(MirInstruction::ObjectNew {
+                    target,
+                    entries: lowered,
+                });
+                Ok(target)
+            }
+            HirExprKind::ObjectAccess { object, key } => {
+                let object_slot = self.lower_expr(object)?;
+                let key_slot = self.lower_expr(key)?;
+                let target = self.allocate_temp(expr.ty.clone());
+                self.emit(MirInstruction::ObjectGet {
+                    target,
+                    object: object_slot,
+                    key: key_slot,
+                    value_type: expr.ty.clone(),
+                });
+                Ok(target)
+            }
             HirExprKind::ArrayLiteral { elements } => {
                 let mut lowered = Vec::with_capacity(elements.len());
                 for element in elements {
@@ -1113,5 +1155,65 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(instructions.iter().any(|inst| matches!(inst, MirInstruction::ArrayNew { .. })));
         assert!(instructions.iter().any(|inst| matches!(inst, MirInstruction::ArrayGet { .. })));
+    }
+
+    #[test]
+    fn lowers_runtime_object_access_to_mir() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"name": "Yui", "score": 8}
+.return data.score
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should succeed");
+        let mir = lower_hir_to_mir(&hir).expect("mir should succeed");
+        let instructions = mir.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .collect::<Vec<_>>();
+        assert!(instructions.iter().any(|inst| matches!(inst, MirInstruction::ObjectNew { .. })));
+        assert!(instructions.iter().any(|inst| matches!(inst, MirInstruction::ObjectGet { .. })));
+    }
+
+    #[test]
+    fn lowers_nested_runtime_object_and_object_array_access_to_mir() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"profile": {"name": "Yui"}, "items": [{"score": 5}, {"score": 8}]}
+.return data.items[1].score
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should succeed");
+        let mir = lower_hir_to_mir(&hir).expect("mir should succeed");
+        let instructions = mir.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .collect::<Vec<_>>();
+        let object_news = instructions
+            .iter()
+            .filter(|inst| matches!(inst, MirInstruction::ObjectNew { .. }))
+            .count();
+        let object_gets = instructions
+            .iter()
+            .filter(|inst| matches!(inst, MirInstruction::ObjectGet { .. }))
+            .count();
+        let array_news = instructions
+            .iter()
+            .filter(|inst| matches!(inst, MirInstruction::ArrayNew { .. }))
+            .count();
+        let array_gets = instructions
+            .iter()
+            .filter(|inst| matches!(inst, MirInstruction::ArrayGet { .. }))
+            .count();
+        assert!(object_news >= 3, "expected nested object literals to lower into object allocations");
+        assert!(object_gets >= 2, "expected nested object member reads to lower into object gets");
+        assert!(array_news >= 1, "expected object array literal to lower into array allocation");
+        assert!(array_gets >= 1, "expected object array index read to lower into array get");
     }
 }

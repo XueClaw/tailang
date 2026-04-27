@@ -225,6 +225,8 @@ struct TextSection {
 
 struct FrameLayout {
     local_offsets: BTreeMap<usize, u32>,
+    array_offsets: BTreeMap<usize, u32>,
+    object_offsets: BTreeMap<usize, u32>,
     frame_size: u32,
     outbound_args_base: u32,
     outbound_args_size: u32,
@@ -265,10 +267,47 @@ impl FrameLayout {
         for slot in 0..used_slots {
             local_offsets.insert(slot as usize, local_base + (slot * LOCAL_SLOT_SIZE));
         }
-        let required_size = local_base + (used_slots * LOCAL_SLOT_SIZE);
+        let mut array_lengths = BTreeMap::new();
+        for block in &function.blocks {
+            for inst in &block.instructions {
+                if let MirInstruction::ArrayNew { target, elements, .. } = inst {
+                    let len = elements.len() as u32;
+                    array_lengths
+                        .entry(*target)
+                        .and_modify(|current: &mut u32| *current = (*current).max(len))
+                        .or_insert(len);
+                }
+            }
+        }
+        let mut array_offsets = BTreeMap::new();
+        let mut cursor = local_base + (used_slots * LOCAL_SLOT_SIZE);
+        for (slot, len) in &array_lengths {
+            array_offsets.insert(*slot, cursor);
+            cursor += (len + 1) * 8;
+        }
+        let mut object_lengths = BTreeMap::new();
+        for block in &function.blocks {
+            for inst in &block.instructions {
+                if let MirInstruction::ObjectNew { target, entries } = inst {
+                    let len = entries.len() as u32;
+                    object_lengths
+                        .entry(*target)
+                        .and_modify(|current: &mut u32| *current = (*current).max(len))
+                        .or_insert(len);
+                }
+            }
+        }
+        let mut object_offsets = BTreeMap::new();
+        for (slot, len) in &object_lengths {
+            object_offsets.insert(*slot, cursor);
+            cursor += (1 + (len * 2)) * 8;
+        }
+        let required_size = cursor;
         let frame_size = align_up(required_size.saturating_sub(8), 0x10) + 8;
         Self {
             local_offsets,
+            array_offsets,
+            object_offsets,
             frame_size,
             outbound_args_base,
             outbound_args_size,
@@ -281,6 +320,14 @@ impl FrameLayout {
 
     fn slot_disp(&self, slot: usize) -> u32 {
         self.local_offsets[&slot]
+    }
+
+    fn array_disp(&self, slot: usize) -> Option<u32> {
+        self.array_offsets.get(&slot).copied()
+    }
+
+    fn object_disp(&self, slot: usize) -> Option<u32> {
+        self.object_offsets.get(&slot).copied()
     }
 }
 
@@ -420,6 +467,136 @@ impl<'a> TextBuilder<'a> {
                 emit_store_rax_local(&mut self.code, target_disp);
                 Ok(())
             }
+            MirInstruction::ArrayNew {
+                target,
+                elements,
+                ..
+            } => {
+                let base_disp = self
+                    .frame()
+                    .array_disp(*target)
+                    .ok_or_else(|| format!("数组槽位 {} 缺少 self-native frame 存储区域", target))?;
+                let target_disp = self.frame().slot_disp(*target);
+                emit_lea_rax_rsp_disp32(&mut self.code, base_disp);
+                emit_mov_qword_rax_disp32_imm32(&mut self.code, 0, elements.len() as u32);
+                for (index, element) in elements.iter().enumerate() {
+                    let element_disp = self.frame().slot_disp(*element);
+                    emit_load_rcx_local(&mut self.code, element_disp);
+                    emit_mov_qword_rax_disp32_rcx(
+                        &mut self.code,
+                        ((index as u32) + 1) * 8,
+                    );
+                }
+                emit_lea_rax_rsp_disp32(&mut self.code, base_disp);
+                emit_store_rax_local(&mut self.code, target_disp);
+                Ok(())
+            }
+            MirInstruction::ArrayGet { target, array, index, .. } => {
+                let array_disp = self.frame().slot_disp(*array);
+                let index_disp = self.frame().slot_disp(*index);
+                let target_disp = self.frame().slot_disp(*target);
+                let null_label = self.new_internal_label("array_null");
+                let negative_label = self.new_internal_label("array_negative");
+                let oob_label = self.new_internal_label("array_oob");
+                let done_label = self.new_internal_label("array_done");
+
+                emit_load_rax_local(&mut self.code, array_disp);
+                self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+                self.emit_conditional_jump(0x84, &null_label);
+                emit_load_rcx_local(&mut self.code, index_disp);
+                self.code.extend_from_slice(&[0x48, 0x85, 0xC9]);
+                self.emit_conditional_jump(0x88, &negative_label);
+                emit_mov_rdx_qword_ptr_rax_disp32(&mut self.code, 0);
+                self.code.extend_from_slice(&[0x48, 0x39, 0xD1]);
+                self.emit_conditional_jump(0x8E, &oob_label);
+                emit_mov_rax_qword_ptr_rax_rcx_scale8_disp8(&mut self.code, 8);
+                emit_store_rax_local(&mut self.code, target_disp);
+                self.emit_jump(&done_label);
+
+                self.mark_label(&null_label);
+                emit_mov_rax_imm64(&mut self.code, 0);
+                emit_store_rax_local(&mut self.code, target_disp);
+                self.emit_jump(&done_label);
+
+                self.mark_label(&negative_label);
+                emit_mov_rax_imm64(&mut self.code, 0);
+                emit_store_rax_local(&mut self.code, target_disp);
+                self.emit_jump(&done_label);
+
+                self.mark_label(&oob_label);
+                emit_mov_rax_imm64(&mut self.code, 0);
+                emit_store_rax_local(&mut self.code, target_disp);
+
+                self.mark_label(&done_label);
+                Ok(())
+            }
+            MirInstruction::ObjectNew { target, entries } => {
+                let base_disp = self
+                    .frame()
+                    .object_disp(*target)
+                    .ok_or_else(|| format!("对象槽位 {} 缺少 self-native frame 存储区域", target))?;
+                let target_disp = self.frame().slot_disp(*target);
+                emit_lea_rax_rsp_disp32(&mut self.code, base_disp);
+                emit_mov_qword_rax_disp32_imm32(&mut self.code, 0, entries.len() as u32);
+                for (index, (key_slot, value_slot)) in entries.iter().enumerate() {
+                    let key_disp = self.frame().slot_disp(*key_slot);
+                    emit_load_rcx_local(&mut self.code, key_disp);
+                    emit_mov_qword_rax_disp32_rcx(&mut self.code, ((index as u32) * 16) + 8);
+                    let value_disp = self.frame().slot_disp(*value_slot);
+                    emit_load_rcx_local(&mut self.code, value_disp);
+                    emit_mov_qword_rax_disp32_rcx(&mut self.code, ((index as u32) * 16) + 16);
+                }
+                emit_lea_rax_rsp_disp32(&mut self.code, base_disp);
+                emit_store_rax_local(&mut self.code, target_disp);
+                Ok(())
+            }
+            MirInstruction::ObjectGet { target, object, key, .. } => {
+                let object_disp = self.frame().slot_disp(*object);
+                let key_disp = self.frame().slot_disp(*key);
+                let target_disp = self.frame().slot_disp(*target);
+                let null_label = self.new_internal_label("object_null");
+                let loop_label = self.new_internal_label("object_loop");
+                let match_label = self.new_internal_label("object_match");
+                let miss_label = self.new_internal_label("object_miss");
+                let done_label = self.new_internal_label("object_done");
+
+                emit_load_rax_local(&mut self.code, object_disp);
+                self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+                self.emit_conditional_jump(0x84, &null_label);
+                emit_load_rcx_local(&mut self.code, key_disp);
+                emit_load_rax_local(&mut self.code, object_disp);
+                emit_load_r8_qword_ptr_rax_disp32(&mut self.code, 0);
+                emit_mov_edx_imm32(&mut self.code, 0);
+
+                self.mark_label(&loop_label);
+                emit_test_r8_r8(&mut self.code);
+                self.emit_conditional_jump(0x84, &miss_label);
+                emit_load_rax_local(&mut self.code, object_disp);
+                emit_mov_rax_qword_ptr_rax_rdx_scale8_disp8(&mut self.code, 8);
+                emit_cmp_rax_rcx(&mut self.code);
+                self.emit_conditional_jump(0x84, &match_label);
+                emit_add_rdx_imm8(&mut self.code, 2);
+                emit_dec_r8(&mut self.code);
+                self.emit_jump(&loop_label);
+
+                self.mark_label(&match_label);
+                emit_load_rax_local(&mut self.code, object_disp);
+                emit_mov_rax_qword_ptr_rax_rdx_scale8_disp8(&mut self.code, 16);
+                emit_store_rax_local(&mut self.code, target_disp);
+                self.emit_jump(&done_label);
+
+                self.mark_label(&null_label);
+                emit_mov_rax_imm64(&mut self.code, 0);
+                emit_store_rax_local(&mut self.code, target_disp);
+                self.emit_jump(&done_label);
+
+                self.mark_label(&miss_label);
+                emit_mov_rax_imm64(&mut self.code, 0);
+                emit_store_rax_local(&mut self.code, target_disp);
+
+                self.mark_label(&done_label);
+                Ok(())
+            }
             MirInstruction::Copy { target, source } => {
                 let source_disp = self.frame().slot_disp(*source);
                 let target_disp = self.frame().slot_disp(*target);
@@ -503,9 +680,6 @@ impl<'a> TextBuilder<'a> {
             MirInstruction::Print { value } => {
                 self.emit_print_value(*value);
                 Ok(())
-            }
-            MirInstruction::ArrayNew { .. } | MirInstruction::ArrayGet { .. } => {
-                Err("self-native 后端暂不支持运行时数组；请使用 --backend llvm".to_string())
             }
             MirInstruction::Jump { target } => {
                 self.emit_jump(target);
@@ -755,6 +929,11 @@ fn emit_mov_ecx_imm32(code: &mut Vec<u8>, value: u32) {
     code.extend_from_slice(&value.to_le_bytes());
 }
 
+fn emit_mov_edx_imm32(code: &mut Vec<u8>, value: u32) {
+    code.push(0xBA);
+    code.extend_from_slice(&value.to_le_bytes());
+}
+
 fn emit_load_rax_local(code: &mut Vec<u8>, disp: u32) {
     code.extend_from_slice(&[0x48, 0x8B, 0x84, 0x24]);
     code.extend_from_slice(&disp.to_le_bytes());
@@ -835,6 +1014,31 @@ fn emit_store_rax_rsp_disp32(code: &mut Vec<u8>, disp: u32) {
     code.extend_from_slice(&disp.to_le_bytes());
 }
 
+fn emit_lea_rax_rsp_disp32(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x48, 0x8D, 0x84, 0x24]);
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+fn emit_mov_qword_rax_disp32_imm32(code: &mut Vec<u8>, disp: u32, value: u32) {
+    code.extend_from_slice(&[0x48, 0xC7, 0x80]);
+    code.extend_from_slice(&disp.to_le_bytes());
+    code.extend_from_slice(&value.to_le_bytes());
+}
+
+fn emit_mov_qword_rax_disp32_rcx(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x48, 0x89, 0x88]);
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+fn emit_mov_rdx_qword_ptr_rax_disp32(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x48, 0x8B, 0x90]);
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+fn emit_mov_rax_qword_ptr_rax_rcx_scale8_disp8(code: &mut Vec<u8>, disp: u8) {
+    code.extend_from_slice(&[0x48, 0x8B, 0x44, 0xC8, disp]);
+}
+
 fn emit_mov_qword_rsp_disp32_imm32(code: &mut Vec<u8>, disp: u32, value: u32) {
     code.extend_from_slice(&[0x48, 0xC7, 0x84, 0x24]);
     code.extend_from_slice(&disp.to_le_bytes());
@@ -875,6 +1079,31 @@ fn emit_mov_r9d_imm32(code: &mut Vec<u8>, value: u32) {
 fn emit_mov_r11_imm32(code: &mut Vec<u8>, value: u32) {
     code.extend_from_slice(&[0x49, 0xC7, 0xC3]);
     code.extend_from_slice(&value.to_le_bytes());
+}
+
+fn emit_add_rdx_imm8(code: &mut Vec<u8>, value: u8) {
+    code.extend_from_slice(&[0x48, 0x83, 0xC2, value]);
+}
+
+fn emit_mov_rax_qword_ptr_rax_rdx_scale8_disp8(code: &mut Vec<u8>, disp: u8) {
+    code.extend_from_slice(&[0x48, 0x8B, 0x44, 0xD0, disp]);
+}
+
+fn emit_cmp_rax_rcx(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x48, 0x39, 0xC8]);
+}
+
+fn emit_load_r8_qword_ptr_rax_disp32(code: &mut Vec<u8>, disp: u32) {
+    code.extend_from_slice(&[0x4C, 0x8B, 0x80]);
+    code.extend_from_slice(&disp.to_le_bytes());
+}
+
+fn emit_test_r8_r8(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x4D, 0x85, 0xC0]);
+}
+
+fn emit_dec_r8(code: &mut Vec<u8>) {
+    code.extend_from_slice(&[0x49, 0xFF, 0xC8]);
 }
 
 fn emit_xor_r9d_r9d(code: &mut Vec<u8>) {

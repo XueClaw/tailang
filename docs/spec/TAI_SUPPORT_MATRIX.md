@@ -28,8 +28,8 @@ Status labels:
 | User function calls | yes | yes | yes | yes | yes | Direct named calls only. |
 | Constant object literals | yes | yes | n/a | n/a | yes | Supported through constant-folded collection flow. |
 | Constant member access / string-key object index | yes | yes | n/a | n/a | yes | Works only when the object is statically evaluable. |
-| Runtime array literals and index access | yes | yes | yes | no | yes | `self-native` rejects runtime arrays and must point users to `--backend llvm`. |
-| Runtime object literals and member access | yes | no | no | no | partial | Parsed today, but still lowered only through constant-folded collection semantics. |
+| Runtime array literals and index access | yes | yes | yes | yes | yes | Formal on both self-native and LLVM backends for scalar element arrays. |
+| Runtime object literals and member access | yes | yes | yes | yes | yes | Formal on both backends for object literals plus member/string-key reads that resolve to concrete shapes. |
 | Direct array printing | yes | yes | no | no | yes | Not yet a formal runtime capability in either backend. |
 | Direct object printing | yes | no | no | no | no | Not yet part of the formal runtime surface. |
 
@@ -37,8 +37,9 @@ Status labels:
 
 - Formal `.tai` work should prioritize closing `parser-ready` to executable gaps instead of adding new syntax-only surface area.
 - Runtime collections are currently split:
-  - Arrays are formal on the LLVM path.
-  - Objects remain constant-collection-only until a runtime object model is added.
+  - Arrays are formal on both self-native and LLVM paths.
+  - Nested object literals, object arrays, and member/string-key reads are formal on the LLVM path.
+  - self-native now supports runtime object member reads, but deeper parity still converges toward the LLVM path.
 - Any new syntax or semantic feature should land with at least:
   - one parser or lexer regression test,
   - one HIR or MIR lowering test,

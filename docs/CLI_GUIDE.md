@@ -47,8 +47,9 @@ Current behavior:
 - compiler backend is native
 - currently supported native output target: Windows x64
 - current native executable subset includes returns, conditionals, loops, `match`, text comparison, user function calls, and English `&&` / `||` / `!`
-- runtime arrays are formal on the LLVM path
-- `self-native` still rejects runtime arrays and should be used for scalar/control-flow workloads
+- runtime arrays are formal on both self-native and LLVM paths
+- runtime object member and string-key reads are formal on both self-native and LLVM paths
+- deeper object runtime parity still converges between the two backends
 
 ### `meng run`
 
@@ -58,7 +59,7 @@ Current behavior:
 
 - uses the same build pipeline as `meng build`
 - executes the produced artifact
-- runtime array workloads should be run with `--backend llvm`
+- nested or parity-sensitive object workloads may still prefer `--backend llvm`
 
 ### `meng bench`
 

@@ -194,6 +194,44 @@ default:\n\
   ret i64 0\n\
 }\n\n"
     );
+    out.push_str(
+        "define i64 @tailang_object_get_i64(ptr %object, ptr %key) {\n\
+entry:\n\
+  %is_null = icmp eq ptr %object, null\n\
+  br i1 %is_null, label %default, label %load_count\n\
+\n\
+load_count:\n\
+  %count = load i64, ptr %object, align 8\n\
+  br label %loop\n\
+\n\
+loop:\n\
+  %i = phi i64 [0, %load_count], [%next, %loop_continue]\n\
+  %done = icmp sge i64 %i, %count\n\
+  br i1 %done, label %default, label %check_key\n\
+\n\
+check_key:\n\
+  %offset = mul i64 %i, 2\n\
+  %key_offset = add i64 %offset, 1\n\
+  %key_ptr = getelementptr inbounds i64, ptr %object, i64 %key_offset\n\
+  %stored_key_i64 = load i64, ptr %key_ptr, align 8\n\
+  %stored_key = inttoptr i64 %stored_key_i64 to ptr\n\
+  %matches = icmp eq ptr %stored_key, %key\n\
+  br i1 %matches, label %load_value, label %loop_continue\n\
+\n\
+load_value:\n\
+  %value_offset = add i64 %offset, 2\n\
+  %value_ptr = getelementptr inbounds i64, ptr %object, i64 %value_offset\n\
+  %value = load i64, ptr %value_ptr, align 8\n\
+  ret i64 %value\n\
+\n\
+loop_continue:\n\
+  %next = add i64 %i, 1\n\
+  br label %loop\n\
+\n\
+default:\n\
+  ret i64 0\n\
+}\n\n"
+    );
 
     for function in &program.functions {
         let mut renderer = FunctionRenderer::new(function, &string_lengths);
@@ -213,7 +251,7 @@ default:\n\
             out.push_str("  %entry_result_i32 = zext i1 %entry_result to i32\n");
             out.push_str("  %exit_code = add i32 %entry_result_i32, 0\n");
         }
-        TaiType::Text | TaiType::Array(_) | TaiType::Void => {
+        TaiType::Text | TaiType::Array(_) | TaiType::Object | TaiType::Void => {
             out.push_str("  %exit_code = add i32 0, 0\n")
         }
     }
@@ -355,7 +393,7 @@ impl<'a> FunctionRenderer<'a> {
                         llvm_storage_align(self.slot_type(*target)?)
                     ));
                 }
-                TaiType::Array(_) => {
+                TaiType::Array(_) | TaiType::Object => {
                     out.push_str(&format!(
                         "  store ptr null, ptr %slot{}, align {}\n",
                         target,
@@ -380,6 +418,103 @@ impl<'a> FunctionRenderer<'a> {
                     target,
                     llvm_storage_align(&TaiType::Text)
                 ));
+            }
+            MirInstruction::ObjectNew { target, entries } => {
+                let total = (entries.len() * 2) + 1;
+                let storage = self.next_reg();
+                out.push_str(&format!("  {} = alloca [{} x i64], align 8\n", storage, total));
+                let base = self.next_reg();
+                out.push_str(&format!(
+                    "  {} = getelementptr inbounds [{} x i64], ptr {}, i64 0, i64 0\n",
+                    base, total, storage
+                ));
+                out.push_str(&format!("  store i64 {}, ptr {}, align 8\n", entries.len(), base));
+                for (index, (key_slot, value_slot)) in entries.iter().enumerate() {
+                    let key_ptr = self.load_slot(*key_slot, &TaiType::Text, out);
+                    let key_encoded = self.next_reg();
+                    out.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", key_encoded, key_ptr));
+                    let key_ptr_slot = self.next_reg();
+                    out.push_str(&format!(
+                        "  {} = getelementptr inbounds i64, ptr {}, i64 {}\n",
+                        key_ptr_slot,
+                        base,
+                        (index * 2) + 1
+                    ));
+                    out.push_str(&format!("  store i64 {}, ptr {}, align 8\n", key_encoded, key_ptr_slot));
+                    let value_ty = self.slot_type(*value_slot)?.clone();
+                    let encoded = self.encode_slot_to_i64(*value_slot, &value_ty, out)?;
+                    let value_ptr_slot = self.next_reg();
+                    out.push_str(&format!(
+                        "  {} = getelementptr inbounds i64, ptr {}, i64 {}\n",
+                        value_ptr_slot,
+                        base,
+                        (index * 2) + 2
+                    ));
+                    out.push_str(&format!("  store i64 {}, ptr {}, align 8\n", encoded, value_ptr_slot));
+                }
+                out.push_str(&format!(
+                    "  store ptr {}, ptr %slot{}, align {}\n",
+                    base,
+                    target,
+                    llvm_storage_align(self.slot_type(*target)?)
+                ));
+            }
+            MirInstruction::ObjectGet {
+                target,
+                object,
+                key,
+                value_type,
+            } => {
+                let object_ptr = self.load_slot(*object, &TaiType::Object, out);
+                let key_ptr = self.load_slot(*key, &TaiType::Text, out);
+                let raw = self.next_reg();
+                out.push_str(&format!(
+                    "  {} = call i64 @tailang_object_get_i64(ptr {}, ptr {})\n",
+                    raw, object_ptr, key_ptr
+                ));
+                match value_type {
+                    TaiType::Integer => {
+                        out.push_str(&format!(
+                            "  store i64 {}, ptr %slot{}, align {}\n",
+                            raw,
+                            target,
+                            llvm_storage_align(value_type)
+                        ));
+                    }
+                    TaiType::Boolean => {
+                        let flag = self.next_reg();
+                        out.push_str(&format!("  {} = trunc i64 {} to i1\n", flag, raw));
+                        out.push_str(&format!(
+                            "  store i1 {}, ptr %slot{}, align {}\n",
+                            flag,
+                            target,
+                            llvm_storage_align(value_type)
+                        ));
+                    }
+                    TaiType::Text => {
+                        let ptr_value = self.next_reg();
+                        out.push_str(&format!("  {} = inttoptr i64 {} to ptr\n", ptr_value, raw));
+                        out.push_str(&format!(
+                            "  store ptr {}, ptr %slot{}, align {}\n",
+                            ptr_value,
+                            target,
+                            llvm_storage_align(value_type)
+                        ));
+                    }
+                    TaiType::Array(_) | TaiType::Object => {
+                        let ptr_value = self.next_reg();
+                        out.push_str(&format!("  {} = inttoptr i64 {} to ptr\n", ptr_value, raw));
+                        out.push_str(&format!(
+                            "  store ptr {}, ptr %slot{}, align {}\n",
+                            ptr_value,
+                            target,
+                            llvm_storage_align(value_type)
+                        ));
+                    }
+                    TaiType::Void => {
+                        return Err("LLVM 后端暂不支持该对象成员类型".to_string());
+                    }
+                }
             }
             MirInstruction::ArrayNew {
                 target,
@@ -455,7 +590,17 @@ impl<'a> FunctionRenderer<'a> {
                             llvm_storage_align(element_type)
                         ));
                     }
-                    TaiType::Array(_) | TaiType::Void => {
+                    TaiType::Array(_) | TaiType::Object => {
+                        let ptr_value = self.next_reg();
+                        out.push_str(&format!("  {} = inttoptr i64 {} to ptr\n", ptr_value, raw));
+                        out.push_str(&format!(
+                            "  store ptr {}, ptr %slot{}, align {}\n",
+                            ptr_value,
+                            target,
+                            llvm_storage_align(element_type)
+                        ));
+                    }
+                    TaiType::Void => {
                         return Err("LLVM 后端暂不支持该数组元素类型".to_string());
                     }
                 }
@@ -552,6 +697,10 @@ impl<'a> FunctionRenderer<'a> {
                     }
                     TaiType::Array(inner) => {
                         let value = self.load_slot(*slot, &TaiType::Array(inner), out);
+                        out.push_str(&format!("  ret ptr {}\n", value));
+                    }
+                    TaiType::Object => {
+                        let value = self.load_slot(*slot, &TaiType::Object, out);
                         out.push_str(&format!("  ret ptr {}\n", value));
                     }
                     TaiType::Void => {
@@ -750,6 +899,9 @@ impl<'a> FunctionRenderer<'a> {
             TaiType::Array(_) => {
                 return Err("LLVM 后端暂不支持直接打印数组".to_string());
             }
+            TaiType::Object => {
+                return Err("LLVM 后端暂不支持直接打印对象".to_string());
+            }
             TaiType::Void => {}
         }
         Ok(())
@@ -775,7 +927,13 @@ impl<'a> FunctionRenderer<'a> {
                 out.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", encoded, value));
                 Ok(encoded)
             }
-            TaiType::Array(_) | TaiType::Void => {
+            TaiType::Array(_) | TaiType::Object => {
+                let value = self.load_slot(slot, ty, out);
+                let encoded = self.next_reg();
+                out.push_str(&format!("  {} = ptrtoint ptr {} to i64\n", encoded, value));
+                Ok(encoded)
+            }
+            TaiType::Void => {
                 Err("LLVM 后端暂不支持该数组元素类型".to_string())
             }
         }
@@ -980,6 +1138,7 @@ fn llvm_type(ty: &TaiType) -> &'static str {
         TaiType::Boolean => "i1",
         TaiType::Text => "ptr",
         TaiType::Array(_) => "ptr",
+        TaiType::Object => "ptr",
         TaiType::Void => "i64",
     }
 }
@@ -1003,7 +1162,7 @@ fn llvm_storage_type(ty: &TaiType) -> &'static str {
 fn llvm_storage_align(ty: &TaiType) -> u32 {
     match ty {
         TaiType::Boolean => 1,
-        TaiType::Integer | TaiType::Text | TaiType::Array(_) | TaiType::Void => 8,
+        TaiType::Integer | TaiType::Text | TaiType::Array(_) | TaiType::Object | TaiType::Void => 8,
     }
 }
 

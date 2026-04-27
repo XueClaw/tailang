@@ -1,0 +1,7 @@
+.version 3
+.module llvm_nested_object
+
+.subprogram main() -> int, , ,
+data: object = {"profile": {"name": "Yui"}, "items": [{"score": 5}, {"score": 8}]}
+.print data.profile.name
+.return data.items[1].score

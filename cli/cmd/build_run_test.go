@@ -733,7 +733,7 @@ values: int[] = [3, 5, 8]
 	}
 }
 
-func TestCompileToExecutableRejectsRuntimeArrayOnSelfNative(t *testing.T) {
+func TestCompileToExecutableSupportsRuntimeArrayOnSelfNative(t *testing.T) {
 	tempDir := t.TempDir()
 	outputPath := filepath.Join(tempDir, "self_native_array.exe")
 	ir := &IR{
@@ -741,15 +741,115 @@ func TestCompileToExecutableRejectsRuntimeArrayOnSelfNative(t *testing.T) {
 .module demo
 .subprogram main() -> int, , ,
 values: int[] = [3, 5, 8]
-.return values[1]`,
+.print values[1]
+.return values[2]`,
 	}
 
-	err := compileToExecutable(ir, outputPath, "windows", "self-native", "1")
-	if err == nil {
-		t.Fatal("expected self-native runtime array compile to fail")
+	if err := compileToExecutable(ir, outputPath, "windows", "self-native", "1"); err != nil {
+		t.Fatalf("expected self-native runtime array compile to succeed, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "--backend llvm") {
-		t.Fatalf("expected self-native array error to recommend llvm, got %v", err)
+	result := runExecutable(t, outputPath)
+	if result.exitCode != 8 {
+		t.Fatalf("expected exit code 8, got %d", result.exitCode)
+	}
+	if result.stdout != "5\n" {
+		t.Fatalf("expected runtime array output 5, got %q", result.stdout)
+	}
+}
+
+func TestCompileToExecutableSupportsLlvmRuntimeObjectFlow(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "llvm_object.exe")
+	ir := &IR{
+		Source: `.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"name": "Yui", "score": 8}
+.print data["name"]
+.return data.score`,
+	}
+
+	if err := compileToExecutable(ir, outputPath, "windows", "llvm", "1"); err != nil {
+		t.Fatalf("expected llvm backend to compile runtime object flow, got %v", err)
+	}
+	result := runExecutable(t, outputPath)
+	if result.exitCode != 8 {
+		t.Fatalf("expected exit code 8, got %d", result.exitCode)
+	}
+	if result.stdout != "Yui\n" {
+		t.Fatalf("expected runtime object output Yui, got %q", result.stdout)
+	}
+}
+
+func TestCompileToExecutableSupportsLlvmNestedRuntimeObjectFlow(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "llvm_nested_object.exe")
+	ir := &IR{
+		Source: `.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"profile": {"name": "Yui"}, "items": [{"score": 5}, {"score": 8}]}
+.print data.profile.name
+.return data.items[1].score`,
+	}
+
+	if err := compileToExecutable(ir, outputPath, "windows", "llvm", "1"); err != nil {
+		t.Fatalf("expected llvm backend to compile nested runtime object flow, got %v", err)
+	}
+	result := runExecutable(t, outputPath)
+	if result.exitCode != 8 {
+		t.Fatalf("expected exit code 8, got %d", result.exitCode)
+	}
+	if result.stdout != "Yui\n" {
+		t.Fatalf("expected nested runtime object output Yui, got %q", result.stdout)
+	}
+}
+
+func TestCompileToExecutableSupportsScalarRuntimeObjectOnSelfNative(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "self_native_object.exe")
+	ir := &IR{
+		Source: `.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"score": 8}
+.print data.score
+.return data.score`,
+	}
+
+	if err := compileToExecutable(ir, outputPath, "windows", "self-native", "1"); err != nil {
+		t.Fatalf("expected self-native runtime object compile to succeed, got %v", err)
+	}
+	result := runExecutable(t, outputPath)
+	if result.exitCode != 8 {
+		t.Fatalf("expected exit code 8, got %d", result.exitCode)
+	}
+	if result.stdout != "8\n" {
+		t.Fatalf("expected runtime object output 8, got %q", result.stdout)
+	}
+}
+
+func TestCompileToExecutableSupportsRuntimeObjectOnSelfNative(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "self_native_object.exe")
+	ir := &IR{
+		Source: `.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"name": "Yui", "score": 8}
+.print data["name"]
+.return data.score`,
+	}
+
+	if err := compileToExecutable(ir, outputPath, "windows", "self-native", "1"); err != nil {
+		t.Fatalf("expected self-native runtime object compile to succeed, got %v", err)
+	}
+	result := runExecutable(t, outputPath)
+	if result.exitCode != 8 {
+		t.Fatalf("expected exit code 8, got %d", result.exitCode)
+	}
+	if result.stdout != "Yui\n" {
+		t.Fatalf("expected runtime object output Yui, got %q", result.stdout)
 	}
 }
 
