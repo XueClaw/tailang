@@ -853,6 +853,26 @@ data: object = {"name": "Yui", "score": 8}
 	}
 }
 
+func TestCompileToExecutableRejectsNestedRuntimeObjectOnSelfNative(t *testing.T) {
+	tempDir := t.TempDir()
+	outputPath := filepath.Join(tempDir, "self_native_nested_object.exe")
+	ir := &IR{
+		Source: `.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"profile": {"name": "Yui"}, "items": [{"score": 8}]}
+.return data.items[0].score`,
+	}
+
+	err := compileToExecutable(ir, outputPath, "windows", "self-native", "1")
+	if err == nil {
+		t.Fatal("expected nested self-native runtime object compile to fail")
+	}
+	if !strings.Contains(err.Error(), "--backend llvm") {
+		t.Fatalf("expected nested self-native object error to recommend llvm, got %v", err)
+	}
+}
+
 func TestExtractCodeBlocksFromTextualTai(t *testing.T) {
 	input := `.版本 3
 .程序集 演示

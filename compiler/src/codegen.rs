@@ -343,6 +343,7 @@ struct TextBuilder<'a> {
     current_frame: Option<&'a FrameLayout>,
     current_function_label: Option<String>,
     current_exit_label: Option<String>,
+    current_slot_types: BTreeMap<usize, crate::types::TaiType>,
 }
 
 impl<'a> TextBuilder<'a> {
@@ -364,6 +365,7 @@ impl<'a> TextBuilder<'a> {
             current_frame: None,
             current_function_label: None,
             current_exit_label: None,
+            current_slot_types: BTreeMap::new(),
         }
     }
 
@@ -384,6 +386,12 @@ impl<'a> TextBuilder<'a> {
         self.current_frame = Some(frame);
         self.current_function_label = Some(function.label.clone());
         self.current_exit_label = Some(format!("__{}_exit", function.label));
+        self.current_slot_types = function
+            .params
+            .iter()
+            .map(|param| (param.slot, param.ty.clone()))
+            .chain(function.locals.iter().map(|local| (local.slot, local.ty.clone())))
+            .collect::<BTreeMap<_, _>>();
         self.mark_label(&function.label);
         self.emit_prologue();
         self.emit_param_homing(function);
@@ -400,11 +408,18 @@ impl<'a> TextBuilder<'a> {
         self.current_frame = None;
         self.current_function_label = None;
         self.current_exit_label = None;
+        self.current_slot_types.clear();
         Ok(())
     }
 
     fn frame(&self) -> &'a FrameLayout {
         self.current_frame.expect("current frame should be set")
+    }
+
+    fn slot_type(&self, slot: usize) -> Result<&crate::types::TaiType, String> {
+        self.current_slot_types
+            .get(&slot)
+            .ok_or_else(|| format!("未找到槽位 {} 的类型信息", slot))
     }
 
     fn emit_prologue(&mut self) {
@@ -469,9 +484,12 @@ impl<'a> TextBuilder<'a> {
             }
             MirInstruction::ArrayNew {
                 target,
+                element_type,
                 elements,
-                ..
             } => {
+                if matches!(element_type, crate::types::TaiType::Array(_) | crate::types::TaiType::Object) {
+                    return Err("self-native 后端暂不支持数组元素为数组或对象；请使用 --backend llvm".to_string());
+                }
                 let base_disp = self
                     .frame()
                     .array_disp(*target)
@@ -531,6 +549,11 @@ impl<'a> TextBuilder<'a> {
                 Ok(())
             }
             MirInstruction::ObjectNew { target, entries } => {
+                for (_, value_slot) in entries {
+                    if matches!(self.slot_type(*value_slot)?, crate::types::TaiType::Array(_) | crate::types::TaiType::Object) {
+                        return Err("self-native 后端暂不支持对象成员为数组或对象；请使用 --backend llvm".to_string());
+                    }
+                }
                 let base_disp = self
                     .frame()
                     .object_disp(*target)
@@ -551,6 +574,9 @@ impl<'a> TextBuilder<'a> {
                 Ok(())
             }
             MirInstruction::ObjectGet { target, object, key, .. } => {
+                if matches!(self.slot_type(*target)?, crate::types::TaiType::Array(_) | crate::types::TaiType::Object) {
+                    return Err("self-native 后端暂不支持对象成员结果为数组或对象；请使用 --backend llvm".to_string());
+                }
                 let object_disp = self.frame().slot_disp(*object);
                 let key_disp = self.frame().slot_disp(*key);
                 let target_disp = self.frame().slot_disp(*target);
@@ -1380,6 +1406,19 @@ mod tests {
         }
     }
 
+    fn expect_self_native_compile_error(source: &str) -> String {
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        CodeGenerator::new()
+            .build_native_image_from_program_with_options(
+                &program,
+                CompileOptions {
+                    backend: CompilerBackend::SelfNative,
+                    opt_level: OptimizationLevel::O1,
+                },
+            )
+            .expect_err("self-native build should reject unsupported container shape")
+    }
+
     #[test]
     fn builds_valid_pe_image() {
         let mir = MirProgram {
@@ -1493,6 +1532,100 @@ mod tests {
             )
             .expect_err("llvm backend image builder should reject empty output path");
         assert!(err.contains("输出路径"));
+    }
+
+    #[test]
+    fn rejects_runtime_array_of_objects_on_self_native_backend() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main() -> int, , ,
+items: object[] = [{"score": 8}]
+.return 0
+"#;
+        let err = expect_self_native_compile_error(source);
+        assert!(err.contains("数组元素为数组或对象"));
+        assert!(err.contains("--backend llvm"));
+    }
+
+    #[test]
+    fn rejects_runtime_object_with_container_member_on_self_native_backend() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: object = {"items": [3, 8]}
+.return 0
+"#;
+        let err = expect_self_native_compile_error(source);
+        assert!(err.contains("对象成员为数组或对象"));
+        assert!(err.contains("--backend llvm"));
+    }
+
+    #[test]
+    fn rejects_container_valued_object_get_on_self_native_backend() {
+        let mir = MirProgram {
+            entry_label: "main".to_string(),
+            functions: vec![MirFunction {
+                label: "main".to_string(),
+                return_type: crate::types::TaiType::Integer,
+                locals: vec![
+                    crate::native_ir::MirLocal {
+                        name: "data".to_string(),
+                        slot: 0,
+                        ty: crate::types::TaiType::Object,
+                    },
+                    crate::native_ir::MirLocal {
+                        name: "key".to_string(),
+                        slot: 1,
+                        ty: crate::types::TaiType::Text,
+                    },
+                    crate::native_ir::MirLocal {
+                        name: "items".to_string(),
+                        slot: 2,
+                        ty: crate::types::TaiType::Array(Box::new(crate::types::TaiType::Integer)),
+                    },
+                    crate::native_ir::MirLocal {
+                        name: "exit".to_string(),
+                        slot: 3,
+                        ty: crate::types::TaiType::Integer,
+                    },
+                ],
+                params: vec![],
+                blocks: vec![MirBlock {
+                    label: "main".to_string(),
+                    instructions: vec![
+                        MirInstruction::ConstNull { target: 0 },
+                        MirInstruction::ConstString {
+                            target: 1,
+                            string_id: 0,
+                        },
+                        MirInstruction::ObjectGet {
+                            target: 2,
+                            object: 0,
+                            key: 1,
+                            value_type: crate::types::TaiType::Array(Box::new(
+                                crate::types::TaiType::Integer,
+                            )),
+                        },
+                        MirInstruction::ConstInt {
+                            target: 3,
+                            value: 0,
+                        },
+                        MirInstruction::Return { value: 3 },
+                    ],
+                }],
+            }],
+            strings: vec![crate::native_ir::MirString {
+                id: 0,
+                value: "items".to_string(),
+            }],
+            exit_code: Some(0),
+        };
+        let err = build_native_pe_image(&mir)
+            .expect_err("self-native build should reject container-valued object reads");
+        assert!(err.contains("对象成员结果为数组或对象"));
+        assert!(err.contains("--backend llvm"));
     }
 
     #[test]

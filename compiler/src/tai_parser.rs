@@ -324,13 +324,6 @@ fn parse_string_literal(input: &str, offset: usize) -> Result<String, TaiParseEr
     }
 }
 
-fn split_name_and_type(input: &str) -> (String, Option<String>) {
-    let mut parts = input.splitn(2, ',');
-    let name = parts.next().unwrap_or("").trim().to_string();
-    let ty = parts.next().map(|value| value.trim().to_string()).filter(|value| !value.is_empty());
-    (name, ty)
-}
-
 fn split_function_signature(
     input: &str,
 ) -> Result<
