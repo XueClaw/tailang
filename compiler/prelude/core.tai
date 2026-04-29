@@ -1,0 +1,21 @@
+.版本 3
+.module __tailang_prelude
+
+.subprogram 显示(值: 文本型) -> 空, , ,
+.subprogram 显示(值: 整数型) -> 空, , ,
+.subprogram 显示(值: 逻辑型) -> 空, , ,
+
+.subprogram print(value: text) -> void, , ,
+.subprogram print(value: int) -> void, , ,
+.subprogram print(value: bool) -> void, , ,
+
+.subprogram 文本长度(值: 文本型) -> 整数型, , ,
+.subprogram text_len(value: text) -> int, , ,
+
+.subprogram 数组长度(值: 整数型[]) -> 整数型, , ,
+.subprogram 数组长度(值: 逻辑型[]) -> 整数型, , ,
+.subprogram 数组长度(值: 文本型[]) -> 整数型, , ,
+
+.subprogram array_len(value: int[]) -> int, , ,
+.subprogram array_len(value: bool[]) -> int, , ,
+.subprogram array_len(value: text[]) -> int, , ,

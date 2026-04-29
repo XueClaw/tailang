@@ -525,4 +525,19 @@ return 0
         assert_eq!(function.binding.as_deref(), Some("startup"));
         assert_eq!(function.params, vec!["width", "height"]);
     }
+
+    #[test]
+    fn rejects_deprecated_split_param_local_and_const_decls() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+.参数 值, 整数型
+.局部变量 结果, 整数型
+.常量 文本, 文本型 = "x"
+.返回 0
+"#;
+        let err = TaiParser::from_source(source).expect_err("deprecated declarations should fail");
+        assert!(err.message.contains("旧式分行参数/变量/常量声明已废弃"));
+    }
 }

@@ -1,7 +1,7 @@
 use crate::tai_ast::TaiVarDecl;
 use std::fmt;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum TaiType {
     Integer,
     Boolean,

@@ -1,6 +1,7 @@
 use crate::tai_ast::{TaiFunctionDecl, TaiProgram, TaiVarDecl};
 use crate::tai_exec::{parse_native_tai_exec, TaiExecExpr, TaiExecStmt};
 use crate::types::TaiType;
+use crate::prelude::{PreludeImplementation, PreludeLibrary};
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,7 +37,6 @@ pub enum HirStmt {
         name: String,
         value: HirExpr,
     },
-    Print(HirExpr),
     Return(Option<HirExpr>),
     Break,
     Continue,
@@ -88,6 +88,10 @@ pub enum HirExprKind {
         callee: String,
         arguments: Vec<HirExpr>,
     },
+    BuiltinCall {
+        builtin: HirBuiltinFunction,
+        arguments: Vec<HirExpr>,
+    },
     Unary {
         op: HirUnaryOp,
         right: Box<HirExpr>,
@@ -97,6 +101,13 @@ pub enum HirExprKind {
         op: HirBinaryOp,
         right: Box<HirExpr>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HirBuiltinFunction {
+    Print,
+    TextLen,
+    ArrayLen,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -128,17 +139,33 @@ struct FunctionSignature {
     name: String,
     return_type: TaiType,
     params: Vec<HirBinding>,
+    builtin: Option<HirBuiltinFunction>,
+    from_prelude: bool,
 }
 
 pub fn lower_tai_to_hir(program: &TaiProgram) -> Result<HirProgram, String> {
-    let signatures = collect_signatures(program)?;
+    let prelude = PreludeLibrary::load()?;
+    let signatures = collect_signatures(program, &prelude)?;
     let entry_label = select_entry_label(&signatures)?;
     let signature_map = signatures
-        .iter()
-        .map(|item| (item.name.clone(), item.clone()))
-        .collect::<BTreeMap<_, _>>();
+        .into_iter()
+        .fold(BTreeMap::<String, Vec<FunctionSignature>>::new(), |mut acc, item| {
+            acc.entry(item.name.clone()).or_default().push(item);
+            acc
+        });
 
     let mut functions = Vec::new();
+    for module in &prelude.program.modules {
+        for function in &module.functions {
+            let signatures = signature_map
+                .get(&function.name)
+                .ok_or_else(|| format!("未找到子程序 '{}' 的签名", function.name))?;
+            if signatures.iter().all(|signature| signature.builtin.is_some()) {
+                continue;
+            }
+            functions.push(lower_function(function, &signature_map)?);
+        }
+    }
     for module in &program.modules {
         for function in &module.functions {
             functions.push(lower_function(function, &signature_map)?);
@@ -151,23 +178,57 @@ pub fn lower_tai_to_hir(program: &TaiProgram) -> Result<HirProgram, String> {
     })
 }
 
-fn collect_signatures(program: &TaiProgram) -> Result<Vec<FunctionSignature>, String> {
-    let mut names = BTreeMap::new();
+fn collect_signatures(program: &TaiProgram, prelude: &PreludeLibrary) -> Result<Vec<FunctionSignature>, String> {
     let mut signatures = Vec::new();
+    let mut exact_keys = BTreeMap::<(String, Vec<TaiType>), ()>::new();
+
+    for module in &prelude.program.modules {
+        for function in &module.functions {
+            let params = function
+                .param_decls
+                .iter()
+                .map(|decl| binding_from_decl("参数", decl, true))
+                .collect::<Result<Vec<_>, _>>()?;
+            let param_types = params.iter().map(|param| param.ty.clone()).collect::<Vec<_>>();
+            let implementation = match prelude.implementation_for(&function.name, &param_types) {
+                PreludeImplementation::Intrinsic(builtin) => Some(builtin),
+                PreludeImplementation::Textual => None,
+            };
+            let key = (function.name.clone(), param_types);
+            if exact_keys.insert(key, ()).is_some() {
+                return Err(format!("内置 prelude 中存在重复重载 '{}'", function.name));
+            }
+            signatures.push(FunctionSignature {
+                name: function.name.clone(),
+                return_type: TaiType::parse_optional(function.return_type.as_deref())?,
+                params,
+                builtin: implementation,
+                from_prelude: true,
+            });
+        }
+    }
+
     for module in &program.modules {
         for function in &module.functions {
-            if names.insert(function.name.clone(), ()).is_some() {
-                return Err(format!("重复声明的子程序 '{}'", function.name));
+            if prelude.is_reserved_function_name(&function.name) {
+                return Err(format!("子程序 '{}' 是 prelude 保留名，不能由用户代码重定义", function.name));
             }
             let params = function
                 .param_decls
                 .iter()
                 .map(|decl| binding_from_decl("参数", decl, true))
                 .collect::<Result<Vec<_>, _>>()?;
+            let param_types = params.iter().map(|param| param.ty.clone()).collect::<Vec<_>>();
+            let key = (function.name.clone(), param_types);
+            if exact_keys.insert(key, ()).is_some() {
+                return Err(format!("重复声明的重载 '{}'", function.name));
+            }
             signatures.push(FunctionSignature {
                 name: function.name.clone(),
                 return_type: TaiType::parse_optional(function.return_type.as_deref())?,
                 params,
+                builtin: None,
+                from_prelude: false,
             });
         }
     }
@@ -176,22 +237,48 @@ fn collect_signatures(program: &TaiProgram) -> Result<Vec<FunctionSignature>, St
 
 fn select_entry_label(signatures: &[FunctionSignature]) -> Result<String, String> {
     for signature in signatures {
-        if matches!(signature.name.trim(), "主程序" | "主函数" | "main" | "Main") {
+        if signature.from_prelude {
+            continue;
+        }
+        if signature.params.is_empty()
+            && matches!(signature.name.trim(), "主程序" | "主函数" | "main" | "Main")
+        {
             return Ok(signature.name.clone());
         }
     }
     signatures
-        .first()
+        .iter()
+        .find(|item| !item.from_prelude && item.params.is_empty())
         .map(|item| item.name.clone())
-        .ok_or_else(|| "当前 .tai 程序没有可编译的 .子程序".to_string())
+        .ok_or_else(|| "当前 .tai 程序没有可编译的零参数入口子程序".to_string())
 }
 
 fn lower_function(
     function: &TaiFunctionDecl,
-    signatures: &BTreeMap<String, FunctionSignature>,
+    signatures: &BTreeMap<String, Vec<FunctionSignature>>,
 ) -> Result<HirFunction, String> {
+    let function_param_types = function
+        .param_decls
+        .iter()
+        .map(|decl| {
+            decl.ty
+                .as_deref()
+                .ok_or_else(|| format!("参数 '{}' 缺少类型声明", decl.name))
+                .and_then(TaiType::from_decl_name)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let signature = signatures
         .get(&function.name)
+        .and_then(|items| {
+            items.iter().find(|item| {
+                item.params.len() == function_param_types.len()
+                    && item
+                        .params
+                        .iter()
+                        .zip(function_param_types.iter())
+                        .all(|(param, ty)| param.ty == *ty)
+            })
+        })
         .cloned()
         .ok_or_else(|| format!("未找到子程序 '{}' 的签名", function.name))?;
     let mut context = HirContext::for_function(function, signatures, signature)?;
@@ -235,7 +322,7 @@ struct HirContext<'a> {
     bindings: BTreeMap<String, TaiType>,
     constant_bindings: BTreeMap<String, ConstValue>,
     runtime_shapes: BTreeMap<String, RuntimeShape>,
-    signatures: &'a BTreeMap<String, FunctionSignature>,
+    signatures: &'a BTreeMap<String, Vec<FunctionSignature>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -264,7 +351,7 @@ enum ConstPathSegment {
 impl<'a> HirContext<'a> {
     fn for_function(
         function: &TaiFunctionDecl,
-        signatures: &'a BTreeMap<String, FunctionSignature>,
+        signatures: &'a BTreeMap<String, Vec<FunctionSignature>>,
         signature: FunctionSignature,
     ) -> Result<Self, String> {
         let locals = function
@@ -368,7 +455,6 @@ impl<'a> HirContext<'a> {
                     value: lowered,
                 })
             }
-            TaiExecStmt::Print(expr) => Ok(HirStmt::Print(self.lower_expr(expr)?)),
             TaiExecStmt::Return(expr) => {
                 let lowered = expr.as_ref().map(|item| self.lower_expr(item)).transpose()?;
                 match (&self.return_type, &lowered) {
@@ -438,11 +524,36 @@ impl<'a> HirContext<'a> {
             }
             TaiExecStmt::Expr(TaiExecExpr::Assign { target, value }) => match target.as_ref() {
                 TaiExecExpr::Identifier(name) => {
-                    let slot_ty = self
-                        .bindings
-                        .get(name)
-                        .cloned()
-                        .ok_or_else(|| format!("变量 '{}' 尚未声明类型", name))?;
+                    if !self.bindings.contains_key(name) {
+                        let const_value = self.eval_const(value)?.clone();
+                        let lowered = self.lower_expr(value)?;
+                        let ty = lowered.ty.clone();
+                        if let Some(value) = &const_value {
+                            if matches!(value, ConstValue::Object(_)) {
+                                self.constant_bindings.insert(name.clone(), value.clone());
+                                return Ok(HirStmt::Noop);
+                            }
+                            self.constant_bindings.insert(name.clone(), value.clone());
+                        } else {
+                            self.constant_bindings.remove(name);
+                        }
+                        if let Some(shape) = Self::runtime_shape_from_expr(&lowered) {
+                            self.runtime_shapes.insert(name.clone(), shape);
+                        } else if !matches!(ty, TaiType::Object | TaiType::Array(_)) {
+                            self.runtime_shapes.remove(name);
+                        }
+                        self.bindings.insert(name.clone(), ty.clone());
+                        self.locals.push(HirBinding {
+                            name: name.clone(),
+                            ty: ty.clone(),
+                        });
+                        return Ok(HirStmt::Let {
+                            name: name.clone(),
+                            ty,
+                            value: Some(lowered),
+                        });
+                    }
+                    let slot_ty = self.bindings.get(name).cloned().expect("binding exists");
                     let const_value = self.eval_const(value)?;
                     if let Some(value) = &const_value {
                         if matches!(slot_ty, TaiType::Object) && matches!(value, ConstValue::Object(_)) {
@@ -578,31 +689,47 @@ impl<'a> HirContext<'a> {
                 let TaiExecExpr::Identifier(name) = callee.as_ref() else {
                     return Err("当前 HIR 只支持直接调用已命名子程序".to_string());
                 };
-                let signature = self
+                let candidates = self
                     .signatures
                     .get(name)
                     .cloned()
                     .ok_or_else(|| format!("未找到子程序 '{}'", name))?;
-                if signature.params.len() != arguments.len() {
+                let mut lowered_args = Vec::with_capacity(arguments.len());
+                for argument in arguments {
+                    lowered_args.push(self.lower_expr(argument)?);
+                }
+                let matches = candidates
+                    .iter()
+                    .filter(|signature| {
+                        signature.params.len() == lowered_args.len()
+                            && signature
+                                .params
+                                .iter()
+                                .zip(lowered_args.iter())
+                                .all(|(param, arg)| param.ty == arg.ty)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if matches.is_empty() {
                     return Err(format!(
-                        "调用 '{}' 的参数数量不匹配：期望 {}，实际 {}",
+                        "调用 '{}' 没有匹配的重载；可用重载：{}",
                         name,
-                        signature.params.len(),
-                        arguments.len()
+                        format_overloads(&candidates)
                     ));
                 }
-                let mut lowered_args = Vec::with_capacity(arguments.len());
-                for (index, argument) in arguments.iter().enumerate() {
-                    let lowered = self.lower_expr(argument)?;
-                    self.ensure_assignable(
-                        &signature.params[index].ty,
-                        &lowered.ty,
-                        &format!("调用 '{}' 的第 {} 个参数", name, index + 1),
-                    )?;
-                    lowered_args.push(lowered);
+                if matches.len() > 1 {
+                    return Err(format!(
+                        "调用 '{}' 出现歧义；匹配重载：{}",
+                        name,
+                        format_overloads(&matches)
+                    ));
+                }
+                let signature = &matches[0];
+                if let Some(builtin) = signature.builtin {
+                    return self.lower_builtin_call(builtin, lowered_args);
                 }
                 Ok(HirExpr {
-                    ty: signature.return_type,
+                    ty: signature.return_type.clone(),
                     kind: HirExprKind::Call {
                         callee: name.clone(),
                         arguments: lowered_args,
@@ -1148,6 +1275,81 @@ impl<'a> HirContext<'a> {
     fn ensure_integer(&self, actual: &TaiType, context: &str) -> Result<(), String> {
         self.ensure_assignable(&TaiType::Integer, actual, context)
     }
+
+    fn lower_builtin_call(
+        &self,
+        builtin: HirBuiltinFunction,
+        arguments: Vec<HirExpr>,
+    ) -> Result<HirExpr, String> {
+        match builtin {
+            HirBuiltinFunction::Print => {
+                if arguments.len() != 1 {
+                    return Err(format!(
+                        "内置函数 '显示' 参数数量不匹配：期望 1，实际 {}",
+                        arguments.len()
+                    ));
+                }
+                if matches!(arguments[0].ty, TaiType::Void) {
+                    return Err("内置函数 '显示' 不能打印空值".to_string());
+                }
+                Ok(HirExpr {
+                    ty: TaiType::Void,
+                    kind: HirExprKind::BuiltinCall { builtin, arguments },
+                })
+            }
+            HirBuiltinFunction::TextLen => {
+                if arguments.len() != 1 {
+                    return Err(format!(
+                        "内置函数 '文本长度' 参数数量不匹配：期望 1，实际 {}",
+                        arguments.len()
+                    ));
+                }
+                self.ensure_assignable(&TaiType::Text, &arguments[0].ty, "内置函数 '文本长度'")?;
+                Ok(HirExpr {
+                    ty: TaiType::Integer,
+                    kind: HirExprKind::BuiltinCall { builtin, arguments },
+                })
+            }
+            HirBuiltinFunction::ArrayLen => {
+                if arguments.len() != 1 {
+                    return Err(format!(
+                        "内置函数 '数组长度' 参数数量不匹配：期望 1，实际 {}",
+                        arguments.len()
+                    ));
+                }
+                match &arguments[0].ty {
+                    TaiType::Array(inner)
+                        if matches!(inner.as_ref(), TaiType::Integer | TaiType::Boolean | TaiType::Text) =>
+                    {
+                        Ok(HirExpr {
+                            ty: TaiType::Integer,
+                            kind: HirExprKind::BuiltinCall { builtin, arguments },
+                        })
+                    }
+                    other => Err(format!(
+                        "内置函数 '数组长度' 当前不支持参数类型 {}",
+                        other
+                    )),
+                }
+            }
+        }
+    }
+}
+
+fn format_overloads(signatures: &[FunctionSignature]) -> String {
+    signatures
+        .iter()
+        .map(|signature| {
+            let params = signature
+                .params
+                .iter()
+                .map(|param| param.ty.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{}({})", signature.name, params)
+        })
+        .collect::<Vec<_>>()
+        .join("；")
 }
 
 impl ConstValue {
@@ -1201,9 +1403,9 @@ mod tests {
 计数: 整数型 = 0
 计数 = 加一(1)
 .如果 计数 小于 3
-    .显示 "ok"
+    显示("ok")
 .否则
-    .显示 "bad"
+    显示("bad")
 .如果结束
 .返回 0
 "#;
@@ -1350,6 +1552,154 @@ mod tests {
             }
             _ => panic!("expected call expression"),
         }
+    }
+
+    #[test]
+    fn lowers_builtin_print_function_call() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+显示("hi")
+.返回 0
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::Expr(expr) = &hir.functions[0].body[0] else {
+            panic!("expected expr statement");
+        };
+        match &expr.kind {
+            HirExprKind::BuiltinCall { builtin, arguments } => {
+                assert_eq!(*builtin, HirBuiltinFunction::Print);
+                assert_eq!(arguments.len(), 1);
+                assert_eq!(expr.ty, TaiType::Void);
+            }
+            _ => panic!("expected builtin call expression"),
+        }
+    }
+
+    #[test]
+    fn resolves_exact_function_overload_match() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 格式化(值: 整数型) -> 整数型, , ,
+.返回 值 + 1
+
+.子程序 格式化(值: 文本型) -> 文本型, , ,
+.返回 值
+
+.子程序 主程序() -> 整数型, , ,
+.返回 格式化(2)
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::Return(Some(expr)) = &hir.functions[2].body[0] else {
+            panic!("expected return");
+        };
+        match &expr.kind {
+            HirExprKind::Call { callee, arguments } => {
+                assert_eq!(callee, "格式化");
+                assert_eq!(arguments.len(), 1);
+                assert_eq!(expr.ty, TaiType::Integer);
+            }
+            _ => panic!("expected resolved overload call"),
+        }
+    }
+
+    #[test]
+    fn rejects_duplicate_exact_overload_signature() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 格式化(值: 整数型) -> 整数型, , ,
+.返回 值
+
+.子程序 格式化(输入: 整数型) -> 整数型, , ,
+.返回 输入
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let err = lower_tai_to_hir(&program).expect_err("duplicate overload should fail");
+        assert!(err.contains("重复声明的重载"));
+    }
+
+    #[test]
+    fn rejects_prelude_reserved_function_redefinition() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 显示(值: 整数型) -> 空, , ,
+.返回
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let err = lower_tai_to_hir(&program).expect_err("reserved prelude name should fail");
+        assert!(err.contains("prelude 保留名"));
+    }
+
+    #[test]
+    fn lowers_text_len_builtin_call() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+.返回 文本长度("abc")
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::Return(Some(expr)) = &hir.functions[0].body[0] else {
+            panic!("expected return");
+        };
+        match &expr.kind {
+            HirExprKind::BuiltinCall { builtin, arguments } => {
+                assert_eq!(*builtin, HirBuiltinFunction::TextLen);
+                assert_eq!(arguments.len(), 1);
+                assert_eq!(expr.ty, TaiType::Integer);
+            }
+            _ => panic!("expected text_len builtin"),
+        }
+    }
+
+    #[test]
+    fn lowers_array_len_builtin_call() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+数据: 整数型[] = [3, 5, 8]
+.返回 数组长度(数据)
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        let HirStmt::Return(Some(expr)) = &hir.functions[0].body[1] else {
+            panic!("expected return");
+        };
+        match &expr.kind {
+            HirExprKind::BuiltinCall { builtin, arguments } => {
+                assert_eq!(*builtin, HirBuiltinFunction::ArrayLen);
+                assert_eq!(arguments.len(), 1);
+                assert_eq!(expr.ty, TaiType::Integer);
+            }
+            _ => panic!("expected array_len builtin"),
+        }
+    }
+
+    #[test]
+    fn lowers_english_prelude_aliases() {
+        let source = r#"
+.version 3
+.module demo
+.subprogram main() -> int, , ,
+data: int[] = [3, 5, 8]
+print("hi")
+.return text_len("abc") + array_len(data)
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should lower");
+        assert!(matches!(hir.functions[0].body[1], HirStmt::Expr(_)));
+        let HirStmt::Return(Some(expr)) = &hir.functions[0].body[2] else {
+            panic!("expected return");
+        };
+        assert_eq!(expr.ty, TaiType::Integer);
     }
 
     #[test]

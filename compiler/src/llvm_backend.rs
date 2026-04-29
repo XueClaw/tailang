@@ -150,7 +150,7 @@ fn render_llvm_module(program: &MirProgram) -> Result<String, String> {
     let string_lengths = program
         .strings
         .iter()
-        .map(|item| (item.id, item.value.as_bytes().len() + 3))
+        .map(|item| (item.id, item.value.as_bytes().len() + 1))
         .collect::<BTreeMap<_, _>>();
 
     let mut out = String::new();
@@ -162,7 +162,7 @@ fn render_llvm_module(program: &MirProgram) -> Result<String, String> {
             "@.str.{} = private unnamed_addr constant [{} x i8] c\"{}\"\n",
             string.id,
             string_lengths[&string.id],
-            escape_llvm_bytes(&(string.value.clone() + "\r\n"))
+            escape_llvm_bytes(&string.value)
         ));
     }
     out.push('\n');
@@ -605,6 +605,42 @@ impl<'a> FunctionRenderer<'a> {
                     }
                 }
             }
+            MirInstruction::ArrayLen { target, array } => {
+                let array_ty = self.slot_type(*array)?.clone();
+                let array_ptr = self.load_slot(*array, &array_ty, out);
+                let is_null = self.next_reg();
+                out.push_str(&format!("  {} = icmp eq ptr {}, null\n", is_null, array_ptr));
+                let null_label = self.synthetic_label("array_len_null");
+                let load_label = self.synthetic_label("array_len_load");
+                let done_label = self.synthetic_label("array_len_done");
+                out.push_str(&format!(
+                    "  br i1 {}, label %{}, label %{}\n",
+                    is_null,
+                    llvm_block_name(&null_label),
+                    llvm_block_name(&load_label)
+                ));
+                out.push_str(&format!("{}:\n", llvm_block_name(&null_label)));
+                out.push_str(&format!("  br label %{}\n", llvm_block_name(&done_label)));
+                out.push_str(&format!("{}:\n", llvm_block_name(&load_label)));
+                let raw_len = self.next_reg();
+                out.push_str(&format!("  {} = load i64, ptr {}, align 8\n", raw_len, array_ptr));
+                out.push_str(&format!("  br label %{}\n", llvm_block_name(&done_label)));
+                out.push_str(&format!("{}:\n", llvm_block_name(&done_label)));
+                let final_len = self.next_reg();
+                out.push_str(&format!(
+                    "  {} = phi i64 [0, %{}], [{}, %{}]\n",
+                    final_len,
+                    llvm_block_name(&null_label),
+                    raw_len,
+                    llvm_block_name(&load_label)
+                ));
+                out.push_str(&format!(
+                    "  store i64 {}, ptr %slot{}, align {}\n",
+                    final_len,
+                    target,
+                    llvm_storage_align(&TaiType::Integer)
+                ));
+            }
             MirInstruction::Copy { target, source } => {
                 let source_ty = self.slot_type(*source)?.clone();
                 let value = self.load_slot(*source, &source_ty, out);
@@ -652,6 +688,9 @@ impl<'a> FunctionRenderer<'a> {
             }
             MirInstruction::Print { value } => {
                 self.render_print(*value, out)?;
+            }
+            MirInstruction::TextLen { target, text } => {
+                self.render_text_len(*target, *text, out)?;
             }
             MirInstruction::Jump { .. }
             | MirInstruction::JumpIfFalse { .. }
@@ -885,6 +924,12 @@ impl<'a> FunctionRenderer<'a> {
                 let final_len = self.next_reg();
                 out.push_str(&format!("  {} = load i32, ptr {}, align 4\n", final_len, len_ptr));
                 self.emit_write_file(&ptr_value, &final_len, out);
+                let crlf_ptr = self.next_reg();
+                out.push_str(&format!(
+                    "  {} = getelementptr inbounds [3 x i8], ptr @__tailang_crlf, i64 0, i64 0\n",
+                    crlf_ptr
+                ));
+                self.emit_write_file(&crlf_ptr, "2", out);
             }
             TaiType::Integer => {
                 let int_value = self.load_slot(value, &TaiType::Integer, out);
@@ -904,6 +949,67 @@ impl<'a> FunctionRenderer<'a> {
             }
             TaiType::Void => {}
         }
+        Ok(())
+    }
+
+    fn render_text_len(&mut self, target: usize, text: usize, out: &mut String) -> Result<(), String> {
+        let ptr_value = self.load_slot(text, &TaiType::Text, out);
+        let len_ptr = self.next_reg();
+        out.push_str(&format!("  {} = alloca i64, align 8\n", len_ptr));
+        out.push_str(&format!("  store i64 0, ptr {}, align 8\n", len_ptr));
+        let is_null = self.next_reg();
+        out.push_str(&format!("  {} = icmp eq ptr {}, null\n", is_null, ptr_value));
+        let null_label = self.synthetic_label("text_len_null");
+        let loop_label = self.synthetic_label("text_len_loop");
+        let body_label = self.synthetic_label("text_len_body");
+        let done_label = self.synthetic_label("text_len_done");
+        out.push_str(&format!(
+            "  br i1 {}, label %{}, label %{}\n",
+            is_null,
+            llvm_block_name(&null_label),
+            llvm_block_name(&loop_label)
+        ));
+        out.push_str(&format!("{}:\n", llvm_block_name(&null_label)));
+        out.push_str(&format!("  br label %{}\n", llvm_block_name(&done_label)));
+
+        out.push_str(&format!("{}:\n", llvm_block_name(&loop_label)));
+        out.push_str(&format!("  br label %{}\n", llvm_block_name(&body_label)));
+
+        let scan_label = self.synthetic_label("text_len_scan");
+        out.push_str(&format!("{}:\n", llvm_block_name(&body_label)));
+        let cur_len = self.next_reg();
+        out.push_str(&format!("  {} = load i64, ptr {}, align 8\n", cur_len, len_ptr));
+        let ch_ptr = self.next_reg();
+        out.push_str(&format!(
+            "  {} = getelementptr inbounds i8, ptr {}, i64 {}\n",
+            ch_ptr, ptr_value, cur_len
+        ));
+        let ch = self.next_reg();
+        out.push_str(&format!("  {} = load i8, ptr {}, align 1\n", ch, ch_ptr));
+        let is_end = self.next_reg();
+        out.push_str(&format!("  {} = icmp eq i8 {}, 0\n", is_end, ch));
+        out.push_str(&format!(
+            "  br i1 {}, label %{}, label %{}\n",
+            is_end,
+            llvm_block_name(&done_label),
+            llvm_block_name(&scan_label)
+        ));
+
+        out.push_str(&format!("{}:\n", llvm_block_name(&scan_label)));
+        let next_len = self.next_reg();
+        out.push_str(&format!("  {} = add i64 {}, 1\n", next_len, cur_len));
+        out.push_str(&format!("  store i64 {}, ptr {}, align 8\n", next_len, len_ptr));
+        out.push_str(&format!("  br label %{}\n", llvm_block_name(&body_label)));
+
+        out.push_str(&format!("{}:\n", llvm_block_name(&done_label)));
+        let final_len = self.next_reg();
+        out.push_str(&format!("  {} = load i64, ptr {}, align 8\n", final_len, len_ptr));
+        out.push_str(&format!(
+            "  store i64 {}, ptr %slot{}, align {}\n",
+            final_len,
+            target,
+            llvm_storage_align(&TaiType::Integer)
+        ));
         Ok(())
     }
 
@@ -1261,7 +1367,7 @@ mod tests {
 .版本 3
 .程序集 演示
 .子程序 打招呼() -> 空, , ,
-.显示 "hi"
+显示("hi")
 .返回
 
 .子程序 主程序() -> 整数型, , ,
@@ -1282,7 +1388,7 @@ mod tests {
 .返回 "ok"
 
 .子程序 主程序() -> 整数型, , ,
-.显示 取文本()
+显示(取文本())
 .返回 0
 "#;
         let result = compile_and_run(source, "text_return");
@@ -1296,12 +1402,37 @@ mod tests {
 .版本 3
 .程序集 演示
 .子程序 主程序() -> 整数型, , ,
-.显示 "Hello World"
+显示("Hello World")
 .返回 0
 "#;
         let result = compile_and_run(source, "hello_world");
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "Hello World\n");
+    }
+
+    #[test]
+    fn runs_text_len_builtin_through_llvm_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+.返回 文本长度("abc")
+"#;
+        let result = compile_and_run(source, "text_len");
+        assert_eq!(result.exit_code, 3);
+    }
+
+    #[test]
+    fn runs_array_len_builtin_through_llvm_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+数据: 整数型[] = [3, 5, 8]
+.返回 数组长度(数据)
+"#;
+        let result = compile_and_run(source, "array_len");
+        assert_eq!(result.exit_code, 3);
     }
 
     #[test]
@@ -1316,7 +1447,7 @@ mod tests {
     总和 = 总和 + 1
     计数 = 计数 + 1
 .循环判断尾
-.显示 总和
+显示(总和)
 .返回 0
 "#;
         let result = compile_and_run(source, "numeric_loop");

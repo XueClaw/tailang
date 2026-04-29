@@ -83,7 +83,7 @@ meng doc src/
 - MIR lowering
 - runtime ABI 骨架
 - 入口函数检测
-- `.显示 "文本"` 语法接入
+- compiler-owned prelude 函数调用（`显示/print`、`文本长度/text_len`、`数组长度/array_len`）
 - 英文 `&&` / `||` / `!` 逻辑运算
 - Windows x64 原生可执行文件输出
 - `meng bench` benchmark 流程

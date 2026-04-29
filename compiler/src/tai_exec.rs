@@ -1,7 +1,6 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TaiExecStmt {
     Let { name: String, ty: Option<String>, value: Option<TaiExecExpr> },
-    Print(TaiExecExpr),
     Return(Option<TaiExecExpr>),
     Break,
     Continue,
@@ -52,7 +51,7 @@ pub struct TaiExecError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Keyword { Let, Print, If, Else, ElseIf, While, Return, Break, Continue, MatchStart, Case, Default, True, False, Null, And, Or, Not, Begin, End }
+enum Keyword { If, Else, ElseIf, While, Return, Break, Continue, MatchStart, Case, Default, True, False, Null, And, Or, Not, Begin, End }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum TokenKind {
@@ -222,8 +221,6 @@ impl<'a> TaiExecLexer<'a> {
         }
         let ident = self.input[start..self.index].to_string();
         let keyword = match ident.as_str() {
-            "令" => Some(Keyword::Let),
-            "显示" => Some(Keyword::Print),
             "如果" | "若" => Some(Keyword::If),
             "否则如果" => Some(Keyword::ElseIf),
             "否则" => Some(Keyword::Else),
@@ -250,7 +247,6 @@ impl<'a> TaiExecLexer<'a> {
             "else" => Some(Keyword::Else),
             "while" => Some(Keyword::While),
             "return" => Some(Keyword::Return),
-            "print" => Some(Keyword::Print),
             "break" => Some(Keyword::Break),
             "continue" => Some(Keyword::Continue),
             "match" => Some(Keyword::MatchStart),
@@ -297,8 +293,6 @@ impl<'a> TaiExecLexer<'a> {
         }
         let value = self.input[start..self.index].to_string();
         match value.as_str() {
-            "令" => TokenKind::Keyword(Keyword::Let),
-            "显示" => TokenKind::Keyword(Keyword::Print),
             "如果" | "若" => TokenKind::Keyword(Keyword::If),
             "否则如果" => TokenKind::Keyword(Keyword::ElseIf),
             "否则" => TokenKind::Keyword(Keyword::Else),
@@ -379,8 +373,6 @@ impl TaiExecParser {
 
     fn parse_statement(&mut self) -> Result<TaiExecStmt, TaiExecError> {
         if self.check_identifier_local_decl() { return self.parse_typed_local_decl(); }
-        if self.match_keyword(Keyword::Let) { return self.parse_let(); }
-        if self.match_keyword(Keyword::Print) { return self.parse_print(); }
         if self.match_keyword(Keyword::If) { return self.parse_if(); }
         if self.match_keyword(Keyword::MatchStart) { return self.parse_match(); }
         if self.match_keyword(Keyword::While) { return self.parse_while(); }
@@ -388,12 +380,6 @@ impl TaiExecParser {
         if self.match_keyword(Keyword::Break) { return Ok(TaiExecStmt::Break); }
         if self.match_keyword(Keyword::Continue) { return Ok(TaiExecStmt::Continue); }
         Ok(TaiExecStmt::Expr(self.parse_expression()?))
-    }
-
-    fn parse_let(&mut self) -> Result<TaiExecStmt, TaiExecError> {
-        let name = self.consume_identifier("需要变量名")?;
-        let value = if self.match_token(|kind| matches!(kind, TokenKind::Assign)) { Some(self.parse_expression()?) } else { None };
-        Ok(TaiExecStmt::Let { name, ty: None, value })
     }
 
     fn parse_typed_local_decl(&mut self) -> Result<TaiExecStmt, TaiExecError> {
@@ -410,10 +396,6 @@ impl TaiExecParser {
             None
         };
         Ok(TaiExecStmt::Let { name, ty: Some(ty), value })
-    }
-
-    fn parse_print(&mut self) -> Result<TaiExecStmt, TaiExecError> {
-        Ok(TaiExecStmt::Print(self.parse_expression()?))
     }
 
     fn parse_if(&mut self) -> Result<TaiExecStmt, TaiExecError> {
@@ -771,9 +753,6 @@ fn render_statement(stmt: &TaiExecStmt, indent: usize, out: &mut String) {
                 out.push_str(&format!("{padding}let {} = ();\n", name));
             }
         }
-        TaiExecStmt::Print(value) => {
-            out.push_str(&format!("{padding}println!(\"{{}}\", {});\n", render_expr(value)));
-        }
         TaiExecStmt::Return(value) => {
             if let Some(value) = value { out.push_str(&format!("{padding}return {};\n", render_expr(value))); }
             else { out.push_str(&format!("{padding}return;\n")); }
@@ -866,8 +845,8 @@ mod tests {
     #[test]
     fn parses_native_exec_if_else() {
         let source = r#"
-.令 结果 = 用户名
-.显示 "开始检查"
+结果 = 用户名
+显示("开始检查")
 .如果 结果 等于 ""
     .返回 "空"
 .否则
@@ -876,16 +855,16 @@ mod tests {
 "#;
         let statements = parse_native_tai_exec(source).expect("parse should succeed");
         assert_eq!(statements.len(), 3);
-        assert!(matches!(statements[0], TaiExecStmt::Let { .. }));
-        assert!(matches!(statements[1], TaiExecStmt::Print(..)));
+        assert!(matches!(statements[0], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
+        assert!(matches!(statements[1], TaiExecStmt::Expr(TaiExecExpr::Call { .. })));
         assert!(matches!(statements[2], TaiExecStmt::If { .. }));
     }
 
     #[test]
     fn renders_native_exec_to_rust() {
         let source = r#"
-.令 结果 = 用户名
-.显示 "准备返回"
+结果 = 用户名
+显示("准备返回")
 .如果 结果 等于 ""
     .返回 "空"
 .如果结束
@@ -893,21 +872,50 @@ mod tests {
 "#;
         let statements = parse_native_tai_exec(source).expect("parse should succeed");
         let rust = render_native_tai_exec_to_rust(&statements);
-        assert!(rust.contains("let 结果 = 用户名;"));
-        assert!(rust.contains("println!(\"{}\", \"准备返回\");"));
+        assert!(rust.contains("结果 = 用户名;"));
+        assert!(rust.contains("显示(\"准备返回\");"));
         assert!(rust.contains("if 结果 == \"\" {"));
         assert!(rust.contains("return 结果;"));
     }
 
     #[test]
-    fn parses_print_statement() {
+    fn rejects_old_print_keyword_statement() {
         let source = r#"
 .显示 "Hello World"
 .返回 0
 "#;
+        let err = parse_native_tai_exec(source).expect_err("old print keyword should fail");
+        assert!(err.message.contains("需要表达式"));
+    }
+
+    #[test]
+    fn parses_builtin_print_function_call() {
+        let source = r#"
+显示("Hello World")
+.返回 0
+"#;
         let statements = parse_native_tai_exec(source).expect("parse should succeed");
-        assert!(matches!(statements[0], TaiExecStmt::Print(TaiExecExpr::String(_))));
-        assert!(matches!(statements[1], TaiExecStmt::Return(Some(TaiExecExpr::Number(_)))));
+        let TaiExecStmt::Expr(TaiExecExpr::Call { callee, arguments }) = &statements[0] else {
+            panic!("expected builtin call expression");
+        };
+        assert!(matches!(callee.as_ref(), TaiExecExpr::Identifier(name) if name == "显示"));
+        assert_eq!(arguments.len(), 1);
+        assert!(matches!(arguments[0], TaiExecExpr::String(_)));
+    }
+
+    #[test]
+    fn parses_builtin_print_function_call_in_english() {
+        let source = r#"
+print("Hello World")
+.return 0
+"#;
+        let statements = parse_native_tai_exec(source).expect("parse should succeed");
+        let TaiExecStmt::Expr(TaiExecExpr::Call { callee, arguments }) = &statements[0] else {
+            panic!("expected builtin call expression");
+        };
+        assert!(matches!(callee.as_ref(), TaiExecExpr::Identifier(name) if name == "print"));
+        assert_eq!(arguments.len(), 1);
+        assert!(matches!(arguments[0], TaiExecExpr::String(_)));
     }
 
     #[test]
@@ -932,14 +940,14 @@ mod tests {
     #[test]
     fn parses_array_object_and_index_assignment() {
         let source = r#"
-.令 列表 = [1, 2, 3]
-.令 配置 = {"名称": "结衣", 启用: 真}
+列表 = [1, 2, 3]
+配置 = {"名称": "结衣", 启用: 真}
 列表[0] = 10
 .返回 配置["名称"]
 "#;
         let statements = parse_native_tai_exec(source).expect("parse should succeed");
-        assert!(matches!(statements[0], TaiExecStmt::Let { .. }));
-        assert!(matches!(statements[1], TaiExecStmt::Let { .. }));
+        assert!(matches!(statements[0], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
+        assert!(matches!(statements[1], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
         assert!(matches!(statements[2], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
         assert!(matches!(statements[3], TaiExecStmt::Return(Some(TaiExecExpr::Index { .. }))));
     }
@@ -947,7 +955,7 @@ mod tests {
     #[test]
     fn parses_member_access_after_identifier() {
         let source = r#"
-.令 配置 = {"名称": "结衣"}
+配置 = {"名称": "结衣"}
 .返回 配置.名称
 "#;
         let statements = parse_native_tai_exec(source).expect("parse should succeed");
@@ -960,7 +968,7 @@ mod tests {
     #[test]
     fn parses_member_and_nested_index_assignment() {
         let source = r#"
-.令 数据 = {"名称": "结衣", "分数": [3, 5, 8]}
+数据 = {"名称": "结衣", "分数": [3, 5, 8]}
 数据.名称 = "真结衣"
 数据["分数"][1] = 13
 "#;
@@ -1032,7 +1040,7 @@ count: int = 0
     #[test]
     fn parses_eyuyan_style_keywords_without_dot_prefix() {
         let source = r#"
-令 名称 = "结衣"
+名称 = "结衣"
 如果 名称 等于 "结衣"
     返回 真
 否则
@@ -1040,7 +1048,7 @@ count: int = 0
 如果结束
 "#;
         let statements = parse_native_tai_exec(source).expect("parse should succeed");
-        assert!(matches!(statements[0], TaiExecStmt::Let { .. }));
+        assert!(matches!(statements[0], TaiExecStmt::Expr(TaiExecExpr::Assign { .. })));
         assert!(matches!(statements[1], TaiExecStmt::If { .. }));
     }
 

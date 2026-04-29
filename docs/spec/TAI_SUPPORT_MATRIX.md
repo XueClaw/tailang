@@ -25,7 +25,10 @@ Status labels:
 | Logical operators `并且 / 或者 / 非` | yes | yes | yes | yes | yes | Chinese boolean ops fully supported. |
 | Logical operators `&& / \|\| / !` | yes | yes | yes | yes | yes | English C-style boolean ops supported in formal exec syntax. |
 | Integer / boolean / text literals | yes | yes | yes | yes | yes | Shared formal scalar path. |
-| User function calls | yes | yes | yes | yes | yes | Direct named calls only. |
+| User function calls | yes | yes | yes | yes | yes | Direct named calls with exact overload matching. |
+| Prelude function calls (`显示/print`) | yes | yes | yes | yes | yes | Compiler-owned prelude is auto-loaded and names are reserved. |
+| Prelude text length (`文本长度/text_len`) | yes | yes | yes | yes | yes | Formal for text input on both backends. |
+| Prelude array length (`数组长度/array_len`) | yes | yes | yes | yes | yes | Formal for scalar-element arrays on both backends. |
 | Constant object literals | yes | yes | n/a | n/a | yes | Supported through constant-folded collection flow. |
 | Constant member access / string-key object index | yes | yes | n/a | n/a | yes | Works only when the object is statically evaluable. |
 | Runtime array literals and index access | yes | yes | yes | yes | yes | Formal on both self-native and LLVM backends for scalar element arrays. |
@@ -36,6 +39,8 @@ Status labels:
 ## Current Policy
 
 - Formal `.tai` work should prioritize closing `parser-ready` to executable gaps instead of adding new syntax-only surface area.
+- Deprecated declaration and callable-keyword syntax is rejected immediately instead of being accepted as compatibility input.
+- Compiler-owned prelude names are reserved; user-defined functions cannot reuse them.
 - Runtime collections are currently split:
   - Scalar-element arrays are formal on both self-native and LLVM paths.
   - Nested arrays, nested object literals, object arrays, and member/string-key reads that resolve to container shapes are formal on the LLVM path.

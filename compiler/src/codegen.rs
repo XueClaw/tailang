@@ -548,6 +548,25 @@ impl<'a> TextBuilder<'a> {
                 self.mark_label(&done_label);
                 Ok(())
             }
+            MirInstruction::ArrayLen { target, array } => {
+                let array_disp = self.frame().slot_disp(*array);
+                let target_disp = self.frame().slot_disp(*target);
+                let null_label = self.new_internal_label("array_len_null");
+                let done_label = self.new_internal_label("array_len_done");
+
+                emit_load_rax_local(&mut self.code, array_disp);
+                self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+                self.emit_conditional_jump(0x84, &null_label);
+                self.code.extend_from_slice(&[0x48, 0x8B, 0x00]);
+                emit_store_rax_local(&mut self.code, target_disp);
+                self.emit_jump(&done_label);
+
+                self.mark_label(&null_label);
+                emit_mov_rax_imm64(&mut self.code, 0);
+                emit_store_rax_local(&mut self.code, target_disp);
+                self.mark_label(&done_label);
+                Ok(())
+            }
             MirInstruction::ObjectNew { target, entries } => {
                 for (_, value_slot) in entries {
                     if matches!(self.slot_type(*value_slot)?, crate::types::TaiType::Array(_) | crate::types::TaiType::Object) {
@@ -707,6 +726,33 @@ impl<'a> TextBuilder<'a> {
                 self.emit_print_value(*value);
                 Ok(())
             }
+            MirInstruction::TextLen { target, text } => {
+                let text_disp = self.frame().slot_disp(*text);
+                let target_disp = self.frame().slot_disp(*target);
+                let default_label = self.new_internal_label("text_len_default");
+                let done_label = self.new_internal_label("text_len_done");
+
+                emit_load_rax_local(&mut self.code, text_disp);
+                self.code.extend_from_slice(&[0x48, 0x85, 0xC0]);
+                self.emit_conditional_jump(0x84, &default_label);
+                self.code.extend_from_slice(&[0x48, 0xF7, 0xD8, 0x48, 0x83, 0xE8, 0x01]);
+                for (id, len) in &self.rdata.raw_string_lengths {
+                    let next = self.new_internal_label("text_len_next");
+                    self.code.extend_from_slice(&[0x48, 0x3D]);
+                    self.code.extend_from_slice(&(*id as u32).to_le_bytes());
+                    self.emit_conditional_jump(0x85, &next);
+                    emit_mov_rax_imm64(&mut self.code, *len as u64);
+                    emit_store_rax_local(&mut self.code, target_disp);
+                    self.emit_jump(&done_label);
+                    self.mark_label(&next);
+                }
+
+                self.mark_label(&default_label);
+                emit_mov_rax_imm64(&mut self.code, 0);
+                emit_store_rax_local(&mut self.code, target_disp);
+                self.mark_label(&done_label);
+                Ok(())
+            }
             MirInstruction::Jump { target } => {
                 self.emit_jump(target);
                 Ok(())
@@ -803,7 +849,8 @@ impl<'a> TextBuilder<'a> {
             self.code.extend_from_slice(&[0x48, 0x3D]);
             self.code.extend_from_slice(&(*id as u32).to_le_bytes());
             self.emit_conditional_jump(0x85, &next);
-            self.emit_write_file_call(*rva, self.rdata.string_lengths[id]);
+            self.emit_write_file_call(*rva, self.rdata.raw_string_lengths[id]);
+            self.emit_write_file_call(self.rdata.crlf_rva, 2);
             self.mark_label(&next);
         }
     }
@@ -1270,30 +1317,26 @@ fn put_u64(buf: &mut [u8], offset: usize, value: u64) {
 
 struct RdataLayout {
     string_rvas: BTreeMap<usize, u32>,
-    string_lengths: BTreeMap<usize, u32>,
+    raw_string_lengths: BTreeMap<usize, u32>,
+    crlf_rva: u32,
     bytes: Vec<u8>,
 }
 
 impl RdataLayout {
     fn for_program(program: &MirProgram) -> Self {
         let mut string_rvas = BTreeMap::new();
-        let mut string_lengths = BTreeMap::new();
+        let mut raw_string_lengths = BTreeMap::new();
         let mut bytes = Vec::new();
-        if program.strings.is_empty() {
-            let fallback = b"Tailang runtime placeholder\r\n";
-            string_rvas.insert(0, RDATA_RVA);
-            string_lengths.insert(0, fallback.len() as u32);
-            bytes.extend_from_slice(fallback);
-        } else {
-            for item in &program.strings {
-                let rendered = format!("{}\r\n", item.value);
-                let offset = bytes.len() as u32;
-                bytes.extend_from_slice(rendered.as_bytes());
-                string_rvas.insert(item.id, RDATA_RVA + offset);
-                string_lengths.insert(item.id, rendered.len() as u32);
-            }
+        for item in &program.strings {
+            let offset = bytes.len() as u32;
+            bytes.extend_from_slice(item.value.as_bytes());
+            bytes.push(0);
+            string_rvas.insert(item.id, RDATA_RVA + offset);
+            raw_string_lengths.insert(item.id, item.value.len() as u32);
         }
-        Self { string_rvas, string_lengths, bytes }
+        let crlf_rva = RDATA_RVA + bytes.len() as u32;
+        bytes.extend_from_slice(b"\r\n");
+        Self { string_rvas, raw_string_lengths, crlf_rva, bytes }
     }
 
     fn build_bytes(&self) -> Vec<u8> {
@@ -1448,7 +1491,7 @@ mod tests {
 .版本 3
 .程序集 main
 .子程序 主程序() -> 整数型, , ,
-.显示 "Hello World"
+显示("Hello World")
 .返回 0
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
@@ -1472,7 +1515,7 @@ mod tests {
     总和 = 总和 + 1
     计数 = 计数 + 1
 .循环判断尾
-.显示 总和
+显示(总和)
 .返回 0
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
@@ -1634,7 +1677,7 @@ data: object = {"items": [3, 8]}
 .版本 3
 .程序集 演示
 .子程序 打招呼() -> 空, , ,
-.显示 "hi"
+显示("hi")
 .返回
 
 .子程序 主程序() -> 整数型, , ,
@@ -1675,12 +1718,37 @@ data: object = {"items": [3, 8]}
 .返回 "ok"
 
 .子程序 主程序() -> 整数型, , ,
-.显示 取文本()
+显示(取文本())
 .返回 0
 "#;
         let result = run_native_executable(source);
         assert_eq!(result.exit_code, 0);
         assert_eq!(result.stdout, "ok\n");
+    }
+
+    #[test]
+    fn runs_text_len_builtin_through_self_native_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+.返回 文本长度("abc")
+"#;
+        let result = run_native_executable(source);
+        assert_eq!(result.exit_code, 3);
+    }
+
+    #[test]
+    fn runs_array_len_builtin_through_self_native_backend() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+数据: 整数型[] = [3, 5, 8]
+.返回 数组长度(数据)
+"#;
+        let result = run_native_executable(source);
+        assert_eq!(result.exit_code, 3);
     }
 
     #[test]

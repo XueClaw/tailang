@@ -1,5 +1,5 @@
 use crate::compile_config::{CompileOptions, OptimizationLevel};
-use crate::hir::{HirBinaryOp, HirExpr, HirExprKind, HirProgram, HirStmt, HirUnaryOp};
+use crate::hir::{HirBinaryOp, HirBuiltinFunction, HirExpr, HirExprKind, HirProgram, HirStmt, HirUnaryOp};
 use crate::types::TaiType;
 use std::collections::BTreeMap;
 
@@ -83,6 +83,14 @@ pub enum MirInstruction {
         array: usize,
         index: usize,
         element_type: TaiType,
+    },
+    TextLen {
+        target: usize,
+        text: usize,
+    },
+    ArrayLen {
+        target: usize,
+        array: usize,
     },
     Copy {
         target: usize,
@@ -264,7 +272,9 @@ fn constant_fold_and_branch_simplify(mut function: MirFunction) -> MirFunction {
                 MirInstruction::ObjectNew { target, .. }
                 | MirInstruction::ObjectGet { target, .. }
                 | MirInstruction::ArrayNew { target, .. }
-                | MirInstruction::ArrayGet { target, .. } => {
+                | MirInstruction::ArrayGet { target, .. }
+                | MirInstruction::TextLen { target, .. }
+                | MirInstruction::ArrayLen { target, .. } => {
                     known.remove(target);
                     optimized.push(inst.clone());
                 }
@@ -631,11 +641,6 @@ impl<'a> MirBuilder<'a> {
                 });
                 Ok(())
             }
-            HirStmt::Print(expr) => {
-                let value = self.lower_expr(expr)?;
-                self.emit(MirInstruction::Print { value });
-                Ok(())
-            }
             HirStmt::Return(expr) => {
                 let slot = if let Some(expr) = expr {
                     self.lower_expr(expr)?
@@ -888,6 +893,9 @@ impl<'a> MirBuilder<'a> {
                 });
                 Ok(target)
             }
+            HirExprKind::BuiltinCall { builtin, arguments } => {
+                self.lower_builtin_call(*builtin, arguments, &expr.ty)
+            }
             HirExprKind::Unary { op, right } => {
                 let operand = self.lower_expr(right)?;
                 let target = self.allocate_temp(expr.ty.clone());
@@ -930,6 +938,47 @@ impl<'a> MirBuilder<'a> {
             }
         }
     }
+
+    fn lower_builtin_call(
+        &mut self,
+        builtin: HirBuiltinFunction,
+        arguments: &[HirExpr],
+        result_ty: &TaiType,
+    ) -> Result<usize, String> {
+        match builtin {
+            HirBuiltinFunction::Print => {
+                let value = self.lower_expr(
+                    arguments
+                        .first()
+                        .ok_or_else(|| "MIR lowering failed: print builtin missing argument".to_string())?,
+                )?;
+                self.emit(MirInstruction::Print { value });
+                let target = self.allocate_temp(result_ty.clone());
+                self.emit(MirInstruction::ConstNull { target });
+                Ok(target)
+            }
+            HirBuiltinFunction::TextLen => {
+                let text = self.lower_expr(
+                    arguments
+                        .first()
+                        .ok_or_else(|| "MIR lowering failed: text_len builtin missing argument".to_string())?,
+                )?;
+                let target = self.allocate_temp(result_ty.clone());
+                self.emit(MirInstruction::TextLen { target, text });
+                Ok(target)
+            }
+            HirBuiltinFunction::ArrayLen => {
+                let array = self.lower_expr(
+                    arguments
+                        .first()
+                        .ok_or_else(|| "MIR lowering failed: array_len builtin missing argument".to_string())?,
+                )?;
+                let target = self.allocate_temp(result_ty.clone());
+                self.emit(MirInstruction::ArrayLen { target, array });
+                Ok(target)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -949,7 +998,7 @@ mod tests {
 .循环判断首 总和 小于 3
     总和 = 总和 + 1
 .循环判断尾
-.显示 总和
+显示(总和)
 .返回 0
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
@@ -1025,6 +1074,62 @@ mod tests {
     }
 
     #[test]
+    fn lowers_builtin_print_function_call_to_mir() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+显示("hi")
+.返回 0
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should succeed");
+        let mir = lower_hir_to_mir(&hir).expect("mir should succeed");
+        assert!(mir.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .any(|inst| matches!(inst, MirInstruction::Print { .. })));
+    }
+
+    #[test]
+    fn lowers_text_len_builtin_call_to_mir() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+.返回 文本长度("abc")
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should succeed");
+        let mir = lower_hir_to_mir(&hir).expect("mir should succeed");
+        assert!(mir.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .any(|inst| matches!(inst, MirInstruction::TextLen { .. })));
+    }
+
+    #[test]
+    fn lowers_array_len_builtin_call_to_mir() {
+        let source = r#"
+.版本 3
+.程序集 演示
+.子程序 主程序() -> 整数型, , ,
+数据: 整数型[] = [3, 5, 8]
+.返回 数组长度(数据)
+"#;
+        let program = TaiParser::from_source(source).expect("parse should succeed");
+        let hir = lower_tai_to_hir(&program).expect("hir should succeed");
+        let mir = lower_hir_to_mir(&hir).expect("mir should succeed");
+        assert!(mir.functions[0]
+            .blocks
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .any(|inst| matches!(inst, MirInstruction::ArrayLen { .. })));
+    }
+
+    #[test]
     fn preserves_boolean_function_return_type_in_mir() {
         let source = r#"
 .版本 3
@@ -1052,7 +1157,7 @@ mod tests {
 .版本 3
 .程序集 演示
 .子程序 打招呼() -> 空, , ,
-.显示 "hi"
+显示("hi")
 .返回
 
 .子程序 主程序() -> 整数型, , ,

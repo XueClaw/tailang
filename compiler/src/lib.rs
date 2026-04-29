@@ -19,6 +19,7 @@ pub mod tai_exec;
 pub mod tai_lexer;
 pub mod tai_parser;
 pub mod precompiler;
+pub mod prelude;
 
 pub use lexer::Lexer;
 pub use parser::Parser;
