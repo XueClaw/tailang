@@ -1,0 +1,3 @@
+测试 self-native 嵌套对象应显式失败:
+  需要 后端 self-native
+  期望 构建失败 "--backend llvm"

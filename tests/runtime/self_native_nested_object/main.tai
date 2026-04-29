@@ -1,0 +1,6 @@
+.version 3
+.module self_native_nested_object
+
+.subprogram main() -> int, , ,
+data: object = {"profile": {"name": "Yui"}, "items": [{"score": 8}]}
+.return data.items[0].score

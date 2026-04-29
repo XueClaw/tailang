@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -35,7 +36,6 @@ Examples:
 		fmt.Println("🧪 Running tests...")
 		fmt.Println()
 
-		// Find all .meng test files
 		var testFiles []string
 		filepath.Walk(testPath, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
@@ -57,11 +57,18 @@ Examples:
 
 		passed := 0
 		failed := 0
+		skipped := 0
 
 		for _, testFile := range testFiles {
 			fmt.Printf("  Running %s... ", testFile)
 
 			if err := runMengTestFile(cmd, testFile); err != nil {
+				var skipErr mengTestSkipError
+				if errors.As(err, &skipErr) {
+					fmt.Printf("↷ SKIPPED (%s)\n", skipErr.reason)
+					skipped++
+					continue
+				}
 				fmt.Printf("✗ FAILED (%s)\n", err)
 				failed++
 			} else {
@@ -70,7 +77,7 @@ Examples:
 			}
 		}
 
-		fmt.Printf("\n✅ Tests complete: %d passed, %d failed\n", passed, failed)
+		fmt.Printf("\n✅ Tests complete: %d passed, %d failed, %d skipped\n", passed, failed, skipped)
 
 		if failed > 0 {
 			os.Exit(1)
@@ -82,13 +89,35 @@ Examples:
 
 var executeMengTestBuild = executeBuild
 var runMengTestExecutable = executeCompiledProgramForTest
+var executeMengTestBuildForExpectedFailure = func(request buildRequest) error {
+	originalCompile := compileToExecutableForBuild
+	compileToExecutableForBuild = func(ir *IR, outputName string, target string, backend string, optLevel string) error {
+		return compileToExecutableWithWriters(ir, outputName, target, backend, optLevel, os.Stdout, io.Discard)
+	}
+	defer func() {
+		compileToExecutableForBuild = originalCompile
+	}()
+	return executeBuild(request)
+}
 
 var expectedOutputPattern = regexp.MustCompile(`期望\s+输出\s+"([^"]*)"`)
 var expectedExitCodePattern = regexp.MustCompile(`期望\s+退出码\s+(-?\d+)`)
+var expectedBuildFailurePattern = regexp.MustCompile(`期望\s+构建失败\s+"([^"]+)"`)
+var requiredBackendPattern = regexp.MustCompile(`需要\s+后端\s+([A-Za-z0-9_-]+)`)
 
 type mengTestExpectations struct {
-	expectedOutputs []string
-	expectedExit    *int
+	expectedOutputs      []string
+	expectedExit         *int
+	expectedBuildFailure string
+	requiredBackend      string
+}
+
+type mengTestSkipError struct {
+	reason string
+}
+
+func (e mengTestSkipError) Error() string {
+	return e.reason
 }
 
 type compiledProgramResult struct {
@@ -107,8 +136,11 @@ func runMengTestFile(cmd *cobra.Command, testFile string) error {
 	if err != nil {
 		return err
 	}
-	if len(expectations.expectedOutputs) == 0 && expectations.expectedExit == nil {
+	if len(expectations.expectedOutputs) == 0 && expectations.expectedExit == nil && expectations.expectedBuildFailure == "" {
 		return fmt.Errorf("no supported assertions found")
+	}
+	if expectations.requiredBackend != "" && expectations.requiredBackend != commandBackendForTests(cmd) {
+		return mengTestSkipError{reason: fmt.Sprintf("requires backend %s", expectations.requiredBackend)}
 	}
 
 	targetFile, err := resolveTargetSourceFile(testFile)
@@ -133,8 +165,20 @@ func runMengTestFile(cmd *cobra.Command, testFile string) error {
 	if err != nil {
 		return err
 	}
-	if err := executeMengTestBuild(request); err != nil {
-		return fmt.Errorf("build target: %w", err)
+
+	if expectations.expectedBuildFailure != "" {
+		buildErr := executeMengTestBuildForExpectedFailure(request)
+		if buildErr == nil {
+			return fmt.Errorf("expected build failure containing %q, got success", expectations.expectedBuildFailure)
+		}
+		if !strings.Contains(buildErr.Error(), expectations.expectedBuildFailure) {
+			return fmt.Errorf("expected build failure containing %q, got %q", expectations.expectedBuildFailure, buildErr.Error())
+		}
+		return nil
+	}
+	buildErr := executeMengTestBuild(request)
+	if buildErr != nil {
+		return fmt.Errorf("build target: %w", buildErr)
 	}
 
 	result, err := runMengTestExecutable(request.outputName)
@@ -165,6 +209,16 @@ func parseMengTestExpectations(content string) (mengTestExpectations, error) {
 			return mengTestExpectations{}, fmt.Errorf("invalid expected exit code %q: %w", value, err)
 		}
 		expectations.expectedExit = &exitCode
+	}
+
+	buildFailureMatches := expectedBuildFailurePattern.FindAllStringSubmatch(content, -1)
+	if len(buildFailureMatches) > 0 {
+		expectations.expectedBuildFailure = strings.TrimSpace(buildFailureMatches[len(buildFailureMatches)-1][1])
+	}
+
+	requiredBackendMatches := requiredBackendPattern.FindAllStringSubmatch(content, -1)
+	if len(requiredBackendMatches) > 0 {
+		expectations.requiredBackend = strings.TrimSpace(requiredBackendMatches[len(requiredBackendMatches)-1][1])
 	}
 
 	return expectations, nil

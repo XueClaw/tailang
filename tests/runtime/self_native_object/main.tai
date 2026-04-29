@@ -3,5 +3,5 @@
 
 .subprogram main() -> int, , ,
 data: object = {"name": "Yui", "score": 8}
-.print data["name"]
+print(data["name"])
 .return data.score

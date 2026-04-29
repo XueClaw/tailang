@@ -101,8 +101,10 @@ Current behavior:
 - resolves matching `.tai` first, then `.meng` source
 - builds the target program and executes the produced artifact
 - forwards `--backend` and `--opt-level` to the test build
+- supports `需要 后端 xxx` to scope backend-specific regression samples
 - supports `期望 输出 "..."` stdout line assertions
 - supports `期望 退出码 N` exit-code assertions
+- supports `期望 构建失败 "..."` for backend-boundary or compile-failure assertions
 - project-level syntax/runtime regression samples can live under `tests/syntax/`, `tests/runtime/`, and `tests/compat/`
 
 Example:

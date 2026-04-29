@@ -135,6 +135,8 @@ func commandOptLevel(cmd *cobra.Command) string {
 	return value
 }
 
+var compileToExecutableForBuild = compileToExecutable
+
 func executeBuild(request buildRequest) error {
 	// Step 1: Read source file
 	fmt.Println("Step 1/5: Reading source file...")
@@ -174,7 +176,7 @@ func executeBuild(request buildRequest) error {
 
 	// Step 5: Compile to executable
 	fmt.Println("Step 5/5: Compiling to executable...")
-	if err := compileToExecutable(ir, request.outputName, request.target, request.backend, request.optLevel); err != nil {
+	if err := compileToExecutableForBuild(ir, request.outputName, request.target, request.backend, request.optLevel); err != nil {
 		return fmt.Errorf("compilation failed: %w", err)
 	}
 	fmt.Println("  ✓ Compilation successful")
@@ -348,6 +350,18 @@ type IR struct {
 
 // compileToExecutable compiles IR to native executable
 func compileToExecutable(ir *IR, outputName string, target string, backend string, optLevel string) error {
+	return compileToExecutableWithWriters(ir, outputName, target, backend, optLevel, os.Stdout, os.Stderr)
+}
+
+func compileToExecutableWithWriters(
+	ir *IR,
+	outputName string,
+	target string,
+	backend string,
+	optLevel string,
+	stdoutWriter io.Writer,
+	stderrWriter io.Writer,
+) error {
 	if strings.TrimSpace(ir.Source) == "" {
 		return fmt.Errorf("empty .tai source")
 	}
@@ -383,8 +397,8 @@ func compileToExecutable(ir *IR, outputName string, target string, backend strin
 	cmd.Dir = compilerDir
 	var stdoutBuf bytes.Buffer
 	var stderrBuf bytes.Buffer
-	cmd.Stdout = io.MultiWriter(os.Stdout, &stdoutBuf)
-	cmd.Stderr = io.MultiWriter(os.Stderr, &stderrBuf)
+	cmd.Stdout = io.MultiWriter(stdoutWriter, &stdoutBuf)
+	cmd.Stderr = io.MultiWriter(stderrWriter, &stderrBuf)
 
 	if err := cmd.Run(); err != nil {
 		stderr := strings.TrimSpace(stderrBuf.String())

@@ -127,6 +127,83 @@ func TestRunMengTestFilePreservesBackendFlags(t *testing.T) {
 	}
 }
 
+func TestRunMengTestFileSkipsWhenBackendRequirementDiffers(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "src")
+	testsDir := filepath.Join(tempDir, "tests")
+
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.MkdirAll(testsDir, 0755); err != nil {
+		t.Fatalf("mkdir tests: %v", err)
+	}
+
+	target := filepath.Join(srcDir, "main.tai")
+	testFile := filepath.Join(testsDir, "main_test.meng")
+	if err := os.WriteFile(target, []byte(".版本 3\n"), 0644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.WriteFile(testFile, []byte("测试 LLVM:\n  需要 后端 llvm\n  期望 退出码 0\n"), 0644); err != nil {
+		t.Fatalf("write test: %v", err)
+	}
+
+	err := runMengTestFile(nil, testFile)
+	if err == nil {
+		t.Fatal("expected backend mismatch to skip")
+	}
+	var skipErr mengTestSkipError
+	if !errors.As(err, &skipErr) {
+		t.Fatalf("expected skip error, got %T", err)
+	}
+	if !strings.Contains(skipErr.Error(), "requires backend llvm") {
+		t.Fatalf("unexpected skip message: %v", skipErr)
+	}
+}
+
+func TestRunMengTestFileSupportsExpectedBuildFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	srcDir := filepath.Join(tempDir, "src")
+	testsDir := filepath.Join(tempDir, "tests")
+
+	if err := os.MkdirAll(srcDir, 0755); err != nil {
+		t.Fatalf("mkdir src: %v", err)
+	}
+	if err := os.MkdirAll(testsDir, 0755); err != nil {
+		t.Fatalf("mkdir tests: %v", err)
+	}
+
+	target := filepath.Join(srcDir, "main.tai")
+	testFile := filepath.Join(testsDir, "main_test.meng")
+	if err := os.WriteFile(target, []byte(".版本 3\n"), 0644); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	if err := os.WriteFile(testFile, []byte("测试 构建失败:\n  期望 构建失败 \"--backend llvm\"\n"), 0644); err != nil {
+		t.Fatalf("write test: %v", err)
+	}
+
+	originalBuild := executeMengTestBuild
+	originalExpectedFailureBuild := executeMengTestBuildForExpectedFailure
+	originalExec := runMengTestExecutable
+	t.Cleanup(func() {
+		executeMengTestBuild = originalBuild
+		executeMengTestBuildForExpectedFailure = originalExpectedFailureBuild
+		runMengTestExecutable = originalExec
+	})
+
+	executeMengTestBuildForExpectedFailure = func(request buildRequest) error {
+		return errors.New("self-native 后端暂不支持数组元素为数组或对象；请使用 --backend llvm")
+	}
+	runMengTestExecutable = func(path string) (compiledProgramResult, error) {
+		t.Fatal("expected build-failure test not to execute artifact")
+		return compiledProgramResult{}, nil
+	}
+
+	if err := runMengTestFile(nil, testFile); err != nil {
+		t.Fatalf("expected build-failure assertion to pass, got %v", err)
+	}
+}
+
 func TestRunMengTestFileFailsWhenOutputMissing(t *testing.T) {
 	tempDir := t.TempDir()
 	srcDir := filepath.Join(tempDir, "src")
