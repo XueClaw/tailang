@@ -34,7 +34,17 @@ Current behavior:
 
 - accepts legacy JSON snapshot input for compatibility
 - validates textual `.tai v0.3` source rules
+- can emit machine-readable validation diagnostics via `--json`
+- validates minimal textual `.导入/.import` workspace graphs for textual `.tai` files
+- rejects missing import targets, duplicate module names in a workspace graph, and import cycles
+- imported files must be textual `.tai`, not legacy JSON snapshots
 - rejects non-UTF-8 text
+
+Example:
+
+```bash
+meng validate-tai src/main.tai --json
+```
 
 ### `meng build`
 
@@ -49,7 +59,7 @@ Current behavior:
 - current native executable subset includes returns, conditionals, loops, `match`, text comparison, user function calls, and English `&&` / `||` / `!`
 - scalar-element runtime arrays are formal on both self-native and LLVM paths
 - scalar-member runtime object member and string-key reads are formal on both self-native and LLVM paths
-- deeper object runtime parity still converges between the two backends, and self-native explicitly rejects unsupported deeper shapes
+- nested or parity-sensitive object workloads may still prefer `--backend llvm`
 
 ### `meng run`
 
@@ -106,6 +116,7 @@ Current behavior:
 - supports `期望 退出码 N` exit-code assertions
 - supports `期望 构建失败 "..."` for backend-boundary or compile-failure assertions
 - project-level syntax/runtime regression samples can live under `tests/syntax/`, `tests/runtime/`, and `tests/compat/`
+- workspace validation fixtures can live under `tests/workspace/`
 
 Example:
 

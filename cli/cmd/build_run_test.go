@@ -666,7 +666,7 @@ func TestCompileToExecutableSupportsLlvmBackendWithStdout(t *testing.T) {
 		Source: `.版本 3
 .程序集 演示
 .子程序 主程序() -> 整数型, , ,
-.显示 "Hello World"
+显示("Hello World")
 .返回 0`,
 	}
 
@@ -689,7 +689,7 @@ func TestCompileToExecutableSupportsLlvmVoidReturnFlow(t *testing.T) {
 		Source: `.版本 3
 .程序集 演示
 .子程序 打招呼() -> 空, , ,
-.显示 "hi"
+显示("hi")
 .返回
 
 .子程序 主程序() -> 整数型, , ,
@@ -717,7 +717,7 @@ func TestCompileToExecutableSupportsLlvmRuntimeArrayFlow(t *testing.T) {
 .module demo
 .subprogram main() -> int, , ,
 values: int[] = [3, 5, 8]
-.print values[1]
+print(values[1])
 .return values[2]`,
 	}
 
@@ -741,7 +741,7 @@ func TestCompileToExecutableSupportsRuntimeArrayOnSelfNative(t *testing.T) {
 .module demo
 .subprogram main() -> int, , ,
 values: int[] = [3, 5, 8]
-.print values[1]
+print(values[1])
 .return values[2]`,
 	}
 
@@ -765,7 +765,7 @@ func TestCompileToExecutableSupportsLlvmRuntimeObjectFlow(t *testing.T) {
 .module demo
 .subprogram main() -> int, , ,
 data: object = {"name": "Yui", "score": 8}
-.print data["name"]
+print(data["name"])
 .return data.score`,
 	}
 
@@ -789,7 +789,7 @@ func TestCompileToExecutableSupportsLlvmNestedRuntimeObjectFlow(t *testing.T) {
 .module demo
 .subprogram main() -> int, , ,
 data: object = {"profile": {"name": "Yui"}, "items": [{"score": 5}, {"score": 8}]}
-.print data.profile.name
+print(data.profile.name)
 .return data.items[1].score`,
 	}
 
@@ -813,7 +813,7 @@ func TestCompileToExecutableSupportsScalarRuntimeObjectOnSelfNative(t *testing.T
 .module demo
 .subprogram main() -> int, , ,
 data: object = {"score": 8}
-.print data.score
+print(data.score)
 .return data.score`,
 	}
 
@@ -837,7 +837,7 @@ func TestCompileToExecutableSupportsRuntimeObjectOnSelfNative(t *testing.T) {
 .module demo
 .subprogram main() -> int, , ,
 data: object = {"name": "Yui", "score": 8}
-.print data["name"]
+print(data["name"])
 .return data.score`,
 	}
 

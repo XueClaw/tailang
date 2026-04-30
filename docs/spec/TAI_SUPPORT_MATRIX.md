@@ -29,6 +29,7 @@ Status labels:
 | Prelude function calls (`显示/print`) | yes | yes | yes | yes | yes | Compiler-owned prelude is auto-loaded and names are reserved. |
 | Prelude text length (`文本长度/text_len`) | yes | yes | yes | yes | yes | Formal for text input on both backends. |
 | Prelude array length (`数组长度/array_len`) | yes | yes | yes | yes | yes | Formal for scalar-element arrays on both backends. |
+| Import / workspace validation (`.导入` / `.import`) | yes | no | no | no | yes | Validation-only through `meng validate-tai`; not yet part of the build/compile pipeline. |
 | Constant object literals | yes | yes | n/a | n/a | yes | Supported through constant-folded collection flow. |
 | Constant member access / string-key object index | yes | yes | n/a | n/a | yes | Works only when the object is statically evaluable. |
 | Runtime array literals and index access | yes | yes | yes | yes | yes | Formal on both self-native and LLVM backends for scalar element arrays. |

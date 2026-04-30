@@ -21,14 +21,14 @@ Example:
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectName := args[0]
-		
+
 		// Validate project name
 		if !isValidProjectName(projectName) {
 			return fmt.Errorf("invalid project name: %s\nProject name must start with a letter and contain only letters, numbers, hyphens, and underscores", projectName)
 		}
-		
+
 		fmt.Printf("🚀 Creating Tailang project: %s\n\n", projectName)
-		
+
 		// Create directory structure
 		dirs := []string{
 			"src",
@@ -36,7 +36,7 @@ Example:
 			"docs",
 			"assets",
 		}
-		
+
 		for _, dir := range dirs {
 			dirPath := filepath.Join(projectName, dir)
 			if err := os.MkdirAll(dirPath, 0755); err != nil {
@@ -44,7 +44,7 @@ Example:
 			}
 			fmt.Printf("  ✓ Created %s/\n", dirPath)
 		}
-		
+
 		// Create .gitignore
 		gitignore := `# Tailang build outputs
 *.exe
@@ -85,7 +85,7 @@ node_modules/
 			return fmt.Errorf("failed to create .gitignore: %w", err)
 		}
 		fmt.Printf("  ✓ Created .gitignore\n")
-		
+
 		// Create src/main.meng
 		mainMeng := `# Welcome to Tailang!
 # This is your first .meng file
@@ -113,7 +113,7 @@ print(greet("Tailang"))
 			return fmt.Errorf("failed to create src/main.meng: %w", err)
 		}
 		fmt.Printf("  ✓ Created src/main.meng\n")
-		
+
 		// Create tests/main_test.meng
 		testMeng := `# Test file example
 
@@ -127,7 +127,7 @@ print(greet("Tailang"))
 			return fmt.Errorf("failed to create tests/main_test.meng: %w", err)
 		}
 		fmt.Printf("  ✓ Created tests/main_test.meng\n")
-		
+
 		// Create README.md
 		readme := fmt.Sprintf(`# %s
 
@@ -144,7 +144,8 @@ meng build src/main.meng
 
 ### Run
 `+"```bash"+`
-meng run src/main.meng
+meng precompile src/main.meng
+meng run src/main.tai
 `+"```"+`
 
 ## 📁 Project Structure
@@ -169,41 +170,43 @@ meng run src/main.meng
 
 ## 🎯 Next Steps
 
-1. Edit `+"`src/main.meng`"+` to write your code
-2. Run `+"`meng build src/main.meng`"+` to compile
-3. Run `+"`./main.exe`"+` (Windows) or `+"`./main`"+` (macOS/Linux) to execute
+1. Edit src/main.meng to describe intent
+2. Run meng precompile src/main.meng to generate formal .tai
+3. Run meng build src/main.tai to compile for Windows x64
+4. Run ./main.exe to execute on Windows
 
 Happy coding! 🎉
 `, projectName, time.Now().Format("2006-01-02"), projectName)
-		
+
 		readmePath := filepath.Join(projectName, "README.md")
 		if err := os.WriteFile(readmePath, []byte(readme), 0644); err != nil {
 			return fmt.Errorf("failed to create README.md: %w", err)
 		}
 		fmt.Printf("  ✓ Created README.md\n")
-		
+
 		// Create project config (optional)
 		config := fmt.Sprintf(`name: %s
 version: 0.1.0
 tailang: 0.1.0
 entry: src/main.meng
 `, projectName)
-		
+
 		configPath := filepath.Join(projectName, "tailang.yaml")
 		if err := os.WriteFile(configPath, []byte(config), 0644); err != nil {
 			return fmt.Errorf("failed to create tailang.yaml: %w", err)
 		}
 		fmt.Printf("  ✓ Created tailang.yaml\n")
-		
+
 		// Print success message
 		fmt.Printf("\n✅ Project '%s' initialized successfully!\n\n", projectName)
 		fmt.Println("📚 Next steps:")
 		fmt.Printf("  cd %s\n", projectName)
-		fmt.Println("  meng build src/main.meng    # Build the project")
-		fmt.Println("  meng run src/main.meng      # Build and run")
-		fmt.Println("  edit src/main.meng          # Start coding!")
+		fmt.Println("  meng precompile src/main.meng  # Generate formal .tai")
+		fmt.Println("  meng build src/main.tai        # Build for Windows x64")
+		fmt.Println("  meng run src/main.tai          # Build and run")
+		fmt.Println("  edit src/main.meng             # Start describing intent")
 		fmt.Println("\n🎉 Happy coding!")
-		
+
 		return nil
 	},
 }
@@ -212,7 +215,7 @@ func isValidProjectName(name string) bool {
 	if len(name) == 0 || len(name) > 100 {
 		return false
 	}
-	
+
 	// Must start with a letter
 	if !strings.HasPrefix(name, "-") && !strings.HasPrefix(name, "_") {
 		firstChar := name[0]
@@ -220,18 +223,18 @@ func isValidProjectName(name string) bool {
 			return false
 		}
 	}
-	
+
 	// Can only contain letters, numbers, hyphens, and underscores
 	for _, char := range name {
-		if !((char >= 'a' && char <= 'z') || 
-		     (char >= 'A' && char <= 'Z') || 
-		     (char >= '0' && char <= '9') || 
-		     char == '-' || 
-		     char == '_') {
+		if !((char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') ||
+			char == '-' ||
+			char == '_') {
 			return false
 		}
 	}
-	
+
 	return true
 }
 

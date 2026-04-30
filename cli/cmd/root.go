@@ -8,11 +8,14 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "meng",
-	Short: "Tailang CLI - Zero syntax programming",
+	Short: "Tailang CLI - .meng to .tai to native build orchestration",
 	Long: `Tailang (太语言) - 道法自然，码由心生
 
-A programming language where you code in natural language.
-Zero syntax, supports 50+ programming languages, compiles to executable in one step.`,
+A .tai-first programming system where .meng acts as engineering input
+and .tai remains the formal reviewable source before native compilation.
+
+Current accepted native target: Windows x64.
+Current CLI responsibilities: precompile, validate-tai, build, run, test, bench, and doc.`,
 }
 
 func Execute() error {

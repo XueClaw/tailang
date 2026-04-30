@@ -3,7 +3,7 @@
 ## Ground Rules
 
 - Tailang formal source code is `.tai`
-- `.tai` uses Chinese-only, dot-prefixed keywords
+- `.tai` uses dot-prefixed formal syntax, with Chinese keywords and English mirror keywords both accepted on the main path
 - All project text files must use UTF-8 and LF
 - Do not introduce temporary host-language compiler paths as product-facing architecture
 

@@ -1,10 +1,21 @@
 package cmd
 
 import (
+	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
+
+func newValidateTaiCommandForTest() *cobra.Command {
+	cmd := &cobra.Command{Use: validateTaiCmd.Use}
+	cmd.RunE = validateTaiCmd.RunE
+	cmd.Flags().Bool("json", false, "Emit machine-readable validation diagnostics as JSON")
+	return cmd
+}
 
 func TestValidateTaiCommandSuccess(t *testing.T) {
 	tempDir := t.TempDir()
@@ -151,5 +162,163 @@ func TestValidateTaiCommandSupportsMatchAndLoop(t *testing.T) {
 
 	if err := validateTaiCmd.RunE(validateTaiCmd, []string{input}); err != nil {
 		t.Fatalf("validateTaiCmd returned error for match/loop .tai: %v", err)
+	}
+}
+
+func TestValidateTaiCommandJSONDiagnosticsForTextualFailure(t *testing.T) {
+	tempDir := t.TempDir()
+	input := filepath.Join(tempDir, "invalid-json-output.tai")
+	content := `.版本 3
+.程序集 认证
+.子程序 登录() -> 文本型, , ,
+.如果 真
+`
+
+	if err := os.WriteFile(input, []byte(content), 0644); err != nil {
+		t.Fatalf("failed to write invalid textual .tai file: %v", err)
+	}
+
+	cmd := newValidateTaiCommandForTest()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	if err := cmd.Flags().Set("json", "true"); err != nil {
+		t.Fatalf("set json flag: %v", err)
+	}
+
+	err := cmd.RunE(cmd, []string{input})
+	if err == nil {
+		t.Fatal("expected validateTaiCmd to fail for invalid textual .tai")
+	}
+
+	var result validateOutcome
+	if decodeErr := json.Unmarshal(out.Bytes(), &result); decodeErr != nil {
+		t.Fatalf("expected JSON validation output, got decode error: %v\nraw: %s", decodeErr, out.String())
+	}
+	if result.Ok {
+		t.Fatalf("expected validation failure outcome, got %+v", result)
+	}
+	if len(result.Diagnostics) != 1 {
+		t.Fatalf("expected 1 diagnostic, got %+v", result.Diagnostics)
+	}
+	if result.Diagnostics[0].Code != "TAI-TEXT-UNCLOSED-BLOCK" {
+		t.Fatalf("unexpected diagnostic code: %+v", result.Diagnostics[0])
+	}
+	if result.Diagnostics[0].File == "" || result.Diagnostics[0].Span == nil || result.Diagnostics[0].Span.Line == 0 {
+		t.Fatalf("expected diagnostic to include file and span, got %+v", result.Diagnostics[0])
+	}
+}
+
+func TestValidateTaiCommandImportWorkspaceSuccess(t *testing.T) {
+	tempDir := t.TempDir()
+	sharedDir := filepath.Join(tempDir, "shared")
+	if err := os.MkdirAll(sharedDir, 0755); err != nil {
+		t.Fatalf("mkdir shared: %v", err)
+	}
+
+	mainTai := filepath.Join(tempDir, "main.tai")
+	sharedTai := filepath.Join(sharedDir, "math.tai")
+
+	mainContent := `.版本 3
+.导入 "shared/math.tai"
+.程序集 主程序
+.子程序 入口() -> 整数型, , ,
+.返回 0
+`
+	sharedContent := `.版本 3
+.程序集 数学
+.子程序 加一(值: 整数型) -> 整数型, , ,
+.返回 值
+`
+
+	if err := os.WriteFile(mainTai, []byte(mainContent), 0644); err != nil {
+		t.Fatalf("write main.tai: %v", err)
+	}
+	if err := os.WriteFile(sharedTai, []byte(sharedContent), 0644); err != nil {
+		t.Fatalf("write math.tai: %v", err)
+	}
+
+	if err := validateTextualTaiFile(mainTai, &validateWorkspaceState{
+		visited:     map[string]struct{}{},
+		visiting:    map[string]struct{}{},
+		moduleOwner: map[string]string{},
+	}); err != nil {
+		t.Fatalf("expected workspace validation to succeed, got %v", err)
+	}
+}
+
+func TestValidateTaiCommandImportWorkspaceMissingFile(t *testing.T) {
+	tempDir := t.TempDir()
+	mainTai := filepath.Join(tempDir, "main.tai")
+	mainContent := `.版本 3
+.import "shared/missing.tai"
+.module main
+.subprogram main() -> int, , ,
+.return 0
+`
+
+	if err := os.WriteFile(mainTai, []byte(mainContent), 0644); err != nil {
+		t.Fatalf("write main.tai: %v", err)
+	}
+
+	err := validateTextualTaiFile(mainTai, &validateWorkspaceState{
+		visited:     map[string]struct{}{},
+		visiting:    map[string]struct{}{},
+		moduleOwner: map[string]string{},
+	})
+	if err == nil {
+		t.Fatal("expected missing import validation to fail")
+	}
+	ve, ok := err.(validationError)
+	if !ok {
+		t.Fatalf("expected validationError, got %T", err)
+	}
+	if ve.diagnostic.Code != "TAI-IMPORT-MISSING" {
+		t.Fatalf("unexpected diagnostic: %+v", ve.diagnostic)
+	}
+}
+
+func TestValidateTaiCommandImportWorkspaceDuplicateModule(t *testing.T) {
+	tempDir := t.TempDir()
+	sharedDir := filepath.Join(tempDir, "shared")
+	if err := os.MkdirAll(sharedDir, 0755); err != nil {
+		t.Fatalf("mkdir shared: %v", err)
+	}
+
+	mainTai := filepath.Join(tempDir, "main.tai")
+	sharedTai := filepath.Join(sharedDir, "dup.tai")
+
+	mainContent := `.版本 3
+.导入 "shared/dup.tai"
+.程序集 重复
+.子程序 入口() -> 整数型, , ,
+.返回 0
+`
+	sharedContent := `.版本 3
+.程序集 重复
+.子程序 帮助() -> 整数型, , ,
+.返回 0
+`
+
+	if err := os.WriteFile(mainTai, []byte(mainContent), 0644); err != nil {
+		t.Fatalf("write main.tai: %v", err)
+	}
+	if err := os.WriteFile(sharedTai, []byte(sharedContent), 0644); err != nil {
+		t.Fatalf("write dup.tai: %v", err)
+	}
+
+	err := validateTextualTaiFile(mainTai, &validateWorkspaceState{
+		visited:     map[string]struct{}{},
+		visiting:    map[string]struct{}{},
+		moduleOwner: map[string]string{},
+	})
+	if err == nil {
+		t.Fatal("expected duplicate module validation to fail")
+	}
+	ve, ok := err.(validationError)
+	if !ok {
+		t.Fatalf("expected validationError, got %T", err)
+	}
+	if ve.diagnostic.Code != "TAI-WORKSPACE-DUPLICATE-MODULE" {
+		t.Fatalf("unexpected diagnostic: %+v", ve.diagnostic)
 	}
 }

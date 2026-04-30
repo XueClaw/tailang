@@ -272,6 +272,12 @@ func TestRenderTaiTextFromSchema(t *testing.T) {
 	if !strings.Contains(out, ".子程序 登录") {
 		t.Fatalf("expected function declaration, got: %s", out)
 	}
+	if strings.Contains(out, ".参数 ") {
+		t.Fatalf("expected no deprecated .参数 declarations, got: %s", out)
+	}
+	if !strings.Contains(out, ".子程序 登录(邮箱: 任意型, 密码: 任意型) -> 空, , ,") {
+		t.Fatalf("expected inline parameter signature, got: %s", out)
+	}
 	if !strings.Contains(out, ".代码 Rust") {
 		t.Fatalf("expected code block, got: %s", out)
 	}

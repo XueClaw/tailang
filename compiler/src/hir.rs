@@ -13,6 +13,7 @@ pub struct HirProgram {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HirFunction {
     pub name: String,
+    pub label: String,
     pub return_type: TaiType,
     pub params: Vec<HirBinding>,
     pub locals: Vec<HirBinding>,
@@ -137,6 +138,7 @@ pub enum HirBinaryOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct FunctionSignature {
     name: String,
+    label: String,
     return_type: TaiType,
     params: Vec<HirBinding>,
     builtin: Option<HirBuiltinFunction>,
@@ -194,12 +196,14 @@ fn collect_signatures(program: &TaiProgram, prelude: &PreludeLibrary) -> Result<
                 PreludeImplementation::Intrinsic(builtin) => Some(builtin),
                 PreludeImplementation::Textual => None,
             };
-            let key = (function.name.clone(), param_types);
+            let label = mangle_function_label(&function.name, &param_types);
+            let key = (function.name.clone(), param_types.clone());
             if exact_keys.insert(key, ()).is_some() {
                 return Err(format!("内置 prelude 中存在重复重载 '{}'", function.name));
             }
             signatures.push(FunctionSignature {
                 name: function.name.clone(),
+                label,
                 return_type: TaiType::parse_optional(function.return_type.as_deref())?,
                 params,
                 builtin: implementation,
@@ -219,12 +223,14 @@ fn collect_signatures(program: &TaiProgram, prelude: &PreludeLibrary) -> Result<
                 .map(|decl| binding_from_decl("参数", decl, true))
                 .collect::<Result<Vec<_>, _>>()?;
             let param_types = params.iter().map(|param| param.ty.clone()).collect::<Vec<_>>();
-            let key = (function.name.clone(), param_types);
+            let label = mangle_function_label(&function.name, &param_types);
+            let key = (function.name.clone(), param_types.clone());
             if exact_keys.insert(key, ()).is_some() {
                 return Err(format!("重复声明的重载 '{}'", function.name));
             }
             signatures.push(FunctionSignature {
                 name: function.name.clone(),
+                label,
                 return_type: TaiType::parse_optional(function.return_type.as_deref())?,
                 params,
                 builtin: None,
@@ -243,13 +249,13 @@ fn select_entry_label(signatures: &[FunctionSignature]) -> Result<String, String
         if signature.params.is_empty()
             && matches!(signature.name.trim(), "主程序" | "主函数" | "main" | "Main")
         {
-            return Ok(signature.name.clone());
+            return Ok(signature.label.clone());
         }
     }
     signatures
         .iter()
         .find(|item| !item.from_prelude && item.params.is_empty())
-        .map(|item| item.name.clone())
+        .map(|item| item.label.clone())
         .ok_or_else(|| "当前 .tai 程序没有可编译的零参数入口子程序".to_string())
 }
 
@@ -281,7 +287,7 @@ fn lower_function(
         })
         .cloned()
         .ok_or_else(|| format!("未找到子程序 '{}' 的签名", function.name))?;
-    let mut context = HirContext::for_function(function, signatures, signature)?;
+    let mut context = HirContext::for_function(function, signatures, signature.clone())?;
     let body = match &function.implementation {
         Some(implementation) => {
             let stmts = parse_native_tai_exec(implementation)
@@ -293,6 +299,7 @@ fn lower_function(
 
     Ok(HirFunction {
         name: function.name.clone(),
+        label: signature.label.clone(),
         return_type: context.return_type.clone(),
         params: context.params.clone(),
         locals: context.locals.clone(),
@@ -731,7 +738,7 @@ impl<'a> HirContext<'a> {
                 Ok(HirExpr {
                     ty: signature.return_type.clone(),
                     kind: HirExprKind::Call {
-                        callee: name.clone(),
+                        callee: signature.label.clone(),
                         arguments: lowered_args,
                     },
                 })
@@ -1352,6 +1359,29 @@ fn format_overloads(signatures: &[FunctionSignature]) -> String {
         .join("；")
 }
 
+fn mangle_function_label(name: &str, param_types: &[TaiType]) -> String {
+    if param_types.is_empty() {
+        return format!("{name}#void");
+    }
+    let suffix = param_types
+        .iter()
+        .map(mangle_type_name)
+        .collect::<Vec<_>>()
+        .join("__");
+    format!("{name}#{suffix}")
+}
+
+fn mangle_type_name(ty: &TaiType) -> String {
+    match ty {
+        TaiType::Integer => "int".to_string(),
+        TaiType::Boolean => "bool".to_string(),
+        TaiType::Text => "text".to_string(),
+        TaiType::Object => "object".to_string(),
+        TaiType::Void => "void".to_string(),
+        TaiType::Array(inner) => format!("array_{}", mangle_type_name(inner)),
+    }
+}
+
 impl ConstValue {
     fn scalar_type(&self) -> Option<TaiType> {
         match self {
@@ -1411,7 +1441,7 @@ mod tests {
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
         let hir = lower_tai_to_hir(&program).expect("hir should lower");
-        assert_eq!(hir.entry_label, "主程序");
+        assert_eq!(hir.entry_label, "主程序#void");
         assert_eq!(hir.functions.len(), 2);
         assert_eq!(hir.functions[0].return_type, TaiType::Integer);
         assert!(matches!(hir.functions[1].body[0], HirStmt::Let { .. }));
@@ -1424,12 +1454,15 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序(计数: 整数型) -> 整数型, , ,
+.子程序 循环测试(计数: 整数型) -> 整数型, , ,
 .循环判断首 计数 小于 10
     .到循环尾
     .跳出循环
 .循环判断尾
 .返回 0
+
+.子程序 主程序() -> 整数型, , ,
+.返回 循环测试(0)
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
         let hir = lower_tai_to_hir(&program).expect("hir should lower");
@@ -1546,7 +1579,7 @@ mod tests {
         };
         match &expr.kind {
             HirExprKind::Call { callee, arguments } => {
-                assert_eq!(callee, "加一");
+                assert_eq!(callee, "加一#int");
                 assert_eq!(arguments.len(), 1);
                 assert_eq!(expr.ty, TaiType::Integer);
             }
@@ -1599,7 +1632,7 @@ mod tests {
         };
         match &expr.kind {
             HirExprKind::Call { callee, arguments } => {
-                assert_eq!(callee, "格式化");
+                assert_eq!(callee, "格式化#int");
                 assert_eq!(arguments.len(), 1);
                 assert_eq!(expr.ty, TaiType::Integer);
             }
@@ -1784,9 +1817,12 @@ print("hi")
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序(索引: 整数型) -> 整数型, , ,
+.子程序 取值(索引: 整数型) -> 整数型, , ,
 数据: 整数型[] = [3, 5, 8]
 .返回 数据[索引]
+
+.子程序 主程序() -> 整数型, , ,
+.返回 取值(1)
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
         let hir = lower_tai_to_hir(&program).expect("hir should lower");
@@ -1806,12 +1842,15 @@ print("hi")
         let source = r#"
 .version 3
 .module demo
-.subprogram main(flag: bool, ready: bool, valid: bool) -> int, , ,
+.subprogram logical(flag: bool, ready: bool, valid: bool) -> int, , ,
 .if !flag || ready && valid
     .return 1
 .else
     .return 0
 .end
+
+.subprogram main() -> int, , ,
+.return logical(false, true, true)
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
         let hir = lower_tai_to_hir(&program).expect("hir should lower");

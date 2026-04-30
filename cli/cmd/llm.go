@@ -55,10 +55,10 @@ type chatCompletionsResponse struct {
 }
 
 type taiSchema struct {
-	Version         string             `json:"version"`
-	Source          taiSource          `json:"source"`
-	Modules         []taiModule        `json:"modules"`
-	CodeBlocks      []taiCodeBlock     `json:"code_blocks"`
+	Version         string              `json:"version"`
+	Source          taiSource           `json:"source"`
+	Modules         []taiModule         `json:"modules"`
+	CodeBlocks      []taiCodeBlock      `json:"code_blocks"`
 	UnresolvedItems []taiUnresolvedItem `json:"unresolved_items"`
 }
 
@@ -82,8 +82,8 @@ type taiFunction struct {
 }
 
 type taiCodeBlock struct {
-	Language string `json:"language"`
-	Code     string `json:"code"`
+	Language string  `json:"language"`
+	Code     string  `json:"code"`
 	LinkedTo *string `json:"linked_to,omitempty"`
 }
 
@@ -618,15 +618,17 @@ func renderTaiTextFromSchema(doc taiSchema) string {
 		for fnIndex, fn := range module.Functions {
 			b.WriteString(".子程序 ")
 			b.WriteString(strings.TrimSpace(fn.Name))
-			b.WriteString("\n")
+			b.WriteString("(")
+			params := make([]string, 0, len(fn.Params))
 			for _, param := range fn.Params {
-				if strings.TrimSpace(param) == "" {
+				param = strings.TrimSpace(param)
+				if param == "" {
 					continue
 				}
-				b.WriteString(".参数 ")
-				b.WriteString(strings.TrimSpace(param))
-				b.WriteString(", 任意型\n")
+				params = append(params, fmt.Sprintf("%s: 任意型", param))
 			}
+			b.WriteString(strings.Join(params, ", "))
+			b.WriteString(") -> 空, , ,\n")
 			if strings.TrimSpace(fn.Description) != "" {
 				b.WriteString(fmt.Sprintf(".说明 %q\n", fn.Description))
 			}

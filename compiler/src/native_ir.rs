@@ -165,7 +165,7 @@ pub fn lower_hir_to_mir_with_options(
 
     for function in &program.functions {
         let mut builder = MirBuilder::new(
-            function.name.clone(),
+            function.label.clone(),
             function.return_type.clone(),
             &mut strings,
         );
@@ -186,7 +186,7 @@ pub fn lower_hir_to_mir_with_options(
         if options.opt_level.enables_mir_optimizations() {
             mir_function = optimize_function(mir_function, options.opt_level);
         }
-        if function.name == program.entry_label {
+        if function.label == program.entry_label {
             exit_code = mir_function
                 .blocks
                 .iter()
@@ -1068,7 +1068,7 @@ mod tests {
             .blocks
             .iter()
             .flat_map(|block| block.instructions.iter())
-            .any(|inst| matches!(inst, MirInstruction::Call { callee, arguments, .. } if callee == "加一" && arguments.len() == 1)));
+            .any(|inst| matches!(inst, MirInstruction::Call { callee, arguments, .. } if callee == "加一#int" && arguments.len() == 1)));
         assert_eq!(mir.functions[0].return_type, TaiType::Integer);
         assert_eq!(mir.functions[1].return_type, TaiType::Integer);
     }
@@ -1221,8 +1221,11 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序(输入: 整数型) -> 整数型, , ,
+.子程序 加二(输入: 整数型) -> 整数型, , ,
 .返回 输入 + 2
+
+.子程序 主程序() -> 整数型, , ,
+.返回 加二(1)
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
         let hir = lower_tai_to_hir(&program).expect("hir should succeed");
@@ -1246,9 +1249,12 @@ mod tests {
         let source = r#"
 .版本 3
 .程序集 演示
-.子程序 主程序(索引: 整数型) -> 整数型, , ,
+.子程序 取值(索引: 整数型) -> 整数型, , ,
 数据: 整数型[] = [3, 5, 8]
 .返回 数据[索引]
+
+.子程序 主程序() -> 整数型, , ,
+.返回 取值(1)
 "#;
         let program = TaiParser::from_source(source).expect("parse should succeed");
         let hir = lower_tai_to_hir(&program).expect("hir should succeed");
